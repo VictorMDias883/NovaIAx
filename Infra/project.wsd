@@ -1,0 +1,37 @@
+@startuml
+
+left to right direction
+skinparam packageStyle rect
+actor costumer
+Rectangle Gateway{
+
+    storage cache
+    (RateLimit)-->(Auth)
+    (Auth)-->(CORS)
+    (CORS)--> (Logs) 
+    (Logs)-- cache
+    (CORS)-->(Roteamento)
+}
+
+costumer -> Gateway
+
+node servidor{
+    package EndPoints {
+        Component PostRegister
+        Component PostLogin
+        Component PostMessage
+        Component PostRegisterObjective
+        Component PostUpdateDayObjective
+
+        Component GetData
+        
+    }
+    EndPoints <-> (Controller)
+    (Controller) --> (Service)
+    (Service) --> (Repository)
+
+    database PostgreSQL
+
+    (Repository) -> PostgreSQL
+}
+Gateway -> servidor

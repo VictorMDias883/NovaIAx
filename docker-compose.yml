@@ -1,0 +1,22 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: novaiax-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: change-me-in-production
+      DEFAULT_ADMIN_PASSWORD: changeme123
+      ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      DOWNSTREAM_SERVICES_JSON: '[{"name":"ai","base_url":"http://mock-ai-service:8001","timeout_seconds":5}]'
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: novaiax-redis
+    ports:
+      - "6379:6379"

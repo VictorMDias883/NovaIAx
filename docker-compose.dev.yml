@@ -1,0 +1,14 @@
+services:
+  app:
+    image: python:3.12-slim
+    container_name: novaiax-app
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: sh -c "python app.py"
+    ports:
+      - "8000:8000"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql://novaiax:novaiax@postgres:5432/novaiax
+      REDIS_URL: redis://redis:6379/0
