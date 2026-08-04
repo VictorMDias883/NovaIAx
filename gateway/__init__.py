@@ -1,1 +1,0 @@
-"""NovaIAx API Gateway package."""

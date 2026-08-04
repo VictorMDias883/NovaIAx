@@ -5,8 +5,8 @@ from typing import Any
 from jose import jwt
 from passlib.context import CryptContext
 
-from gateway.app.cache.redis_client import RedisClient
-from gateway.app.core.config import Settings, get_settings
+from app.cache.redis_client import RedisClient
+from app.core.config import Settings, get_settings
 
 
 def create_access_token(subject: str, settings: Settings | None = None) -> str:

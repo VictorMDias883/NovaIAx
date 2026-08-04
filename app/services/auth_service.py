@@ -5,10 +5,10 @@ from fastapi import HTTPException
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.app.commands.login_command import LoginCommand
-from gateway.app.commands.register_user_command import RegisterUserCommand
-from gateway.app.core.security import create_access_token, create_refresh_token, decode_token
-from gateway.app.repositories.user_repository import UserRepository
+from app.commands.login_command import LoginCommand
+from app.commands.register_user_command import RegisterUserCommand
+from app.core.security import create_access_token, create_refresh_token, decode_token
+from app.repositories.user_repository import UserRepository
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 

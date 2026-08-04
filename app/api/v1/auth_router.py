@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.app.commands.login_command import LoginCommand
-from gateway.app.commands.register_user_command import RegisterUserCommand
-from gateway.app.db.session import SessionLocal
-from gateway.app.schemas.auth_schemas import AuthResponse, LoginRequest, RegisterUserRequest
-from gateway.app.services.auth_service import AuthService
+from app.commands.login_command import LoginCommand
+from app.commands.register_user_command import RegisterUserCommand
+from app.db.session import SessionLocal
+from app.schemas.auth_schemas import AuthResponse, LoginRequest, RegisterUserRequest
+from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 

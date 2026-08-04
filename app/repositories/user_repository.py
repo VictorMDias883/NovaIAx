@@ -3,7 +3,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.app.models.user import User
+from app.models.user import User
 
 
 class UserRepository:

@@ -3,7 +3,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette import status
 
-from gateway.app.core.logging import get_logger
+from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 

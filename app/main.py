@@ -1,14 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from gateway.app.api.v1.router import router as v1_router
-from gateway.app.core.config import get_settings
-from gateway.app.core.logging import configure_logging
-from gateway.app.exceptions.handlers import register_exception_handlers
-from gateway.app.middlewares.auth_middleware import AuthMiddleware
-from gateway.app.middlewares.logging_middleware import LoggingMiddleware
-from gateway.app.middlewares.rate_limit_middleware import RateLimitMiddleware
-from gateway.app.middlewares.security_headers_middleware import SecurityHeadersMiddleware
+from app.api.v1.router import router as v1_router
+from app.core.config import get_settings
+from app.core.logging import configure_logging
+from app.exceptions.handlers import register_exception_handlers
+from app.middlewares.auth_middleware import AuthMiddleware
+from app.middlewares.logging_middleware import LoggingMiddleware
+from app.middlewares.rate_limit_middleware import RateLimitMiddleware
+from app.middlewares.security_headers_middleware import SecurityHeadersMiddleware
 
 configure_logging()
 settings = get_settings()

@@ -6,11 +6,11 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from gateway.app.api.deps import get_auth_service, get_current_user, get_redis_client
-from gateway.app.cache.redis_client import RedisClient
-from gateway.app.core.config import get_settings
-from gateway.app.core.logging import get_logger
-from gateway.app.core.security import AuthService
+from app.api.deps import get_auth_service, get_current_user, get_redis_client
+from app.cache.redis_client import RedisClient
+from app.core.config import get_settings
+from app.core.logging import get_logger
+from app.core.security import AuthService
 
 router = APIRouter(prefix="/proxy", tags=["proxy"])
 logger = get_logger(__name__)

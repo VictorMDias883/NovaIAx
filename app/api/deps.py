@@ -1,8 +1,8 @@
 from fastapi import Depends, Header, HTTPException, Request, status
 
-from gateway.app.core.config import get_settings
-from gateway.app.core.security import AuthService
-from gateway.app.cache.redis_client import RedisClient
+from app.core.config import get_settings
+from app.core.security import AuthService
+from app.cache.redis_client import RedisClient
 
 
 async def get_settings_dep() -> object:

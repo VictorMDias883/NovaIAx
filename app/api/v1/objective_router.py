@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.app.api.deps import get_current_user
-from gateway.app.commands.register_objective_command import RegisterObjectiveCommand
-from gateway.app.db.session import SessionLocal
-from gateway.app.schemas.objective_schemas import ObjectiveResponse, RegisterObjectiveRequest
-from gateway.app.services.objective_service import ObjectiveService
+from app.api.deps import get_current_user
+from app.commands.register_objective_command import RegisterObjectiveCommand
+from app.db.session import SessionLocal
+from app.schemas.objective_schemas import ObjectiveResponse, RegisterObjectiveRequest
+from app.services.objective_service import ObjectiveService
 
 router = APIRouter(prefix="/objectives", tags=["objectives"])
 

@@ -2,8 +2,8 @@ from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from gateway.app.api.deps import get_current_user
-from gateway.app.core.logging import get_logger
+from app.api.deps import get_current_user
+from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 

@@ -3,8 +3,8 @@ from datetime import datetime
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.app.commands.register_objective_command import RegisterObjectiveCommand
-from gateway.app.repositories.objective_repository import ObjectiveRepository
+from app.commands.register_objective_command import RegisterObjectiveCommand
+from app.repositories.objective_repository import ObjectiveRepository
 
 
 class ObjectiveService:

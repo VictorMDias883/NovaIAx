@@ -6,7 +6,7 @@ try:
 except ImportError:  # pragma: no cover - fallback for environments without redis package
     redis_async = None
 
-from gateway.app.core.config import Settings, get_settings
+from app.core.config import Settings, get_settings
 
 
 class InMemoryStore:

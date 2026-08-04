@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gateway.app.models.objective import Objective
+from app.models.objective import Objective
 
 
 class ObjectiveRepository:
