@@ -6,7 +6,7 @@ Este projeto fornece um gateway FastAPI para autenticação, rate limiting, cach
 
 ```bash
 pip install -r requirements.txt
-uvicorn gateway.app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Ou com Docker:
