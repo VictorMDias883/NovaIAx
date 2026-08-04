@@ -13,27 +13,3 @@ services:
       DEFAULT_ADMIN_PASSWORD: changeme123
       ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
       DOWNSTREAM_SERVICES_JSON: '[{"name":"ai","base_url":"http://mock-ai-service:8001","timeout_seconds":5}]'
-    depends_on:
-      - redis
-      - postgres
-
-  postgres:
-    image: postgres:17
-    container_name: novaiax-postgres
-    environment:
-      POSTGRES_DB: novaiax
-      POSTGRES_USER: novaiax
-      POSTGRES_PASSWORD: novaiax
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    container_name: novaiax-redis
-    ports:
-      - "6379:6379"
-
-volumes:
-  postgres_data:

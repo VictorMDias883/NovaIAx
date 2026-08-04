@@ -1,14 +1,17 @@
 services:
-  app:
+  api:
     image: python:3.12-slim
-    container_name: novaiax-app
+    container_name: novaiax-api
     working_dir: /app
     volumes:
       - .:/app
-    command: sh -c "python app.py"
+    command: sh -c "pip install -r requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
     environment:
-      PYTHONUNBUFFERED: "1"
-      DATABASE_URL: postgresql://novaiax:novaiax@postgres:5432/novaiax
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+asyncpg://novaiax:novaiax@host.docker.internal:5432/novaiax
+      REDIS_URL: redis://host.docker.internal:6379/0
+      SECRET_KEY: change-me-in-production
+      DEFAULT_ADMIN_PASSWORD: changeme123
+      ALLOWED_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      DOWNSTREAM_SERVICES_JSON: '[{"name":"ai","base_url":"http://mock-ai-service:8001","timeout_seconds":5}]'
