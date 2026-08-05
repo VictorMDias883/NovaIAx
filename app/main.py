@@ -2,11 +2,11 @@
 Application entry point for the NovaIAx API Gateway.
 
 This module is responsible for:
-  - Bootstrapping the Python path so that the `app` package can be imported
-    regardless of the current working directory.
-  - Creating and configuring the FastAPI application instance.
-  - Registering all middleware, routers, and exception handlers.
-  - Exposing a simple health-check endpoint.
+   - Bootstrapping the Python path so that the `app` package can be imported
+     regardless of the current working directory.
+   - Creating and configuring the FastAPI application instance.
+   - Registering all middleware, routers, and exception handlers.
+   - Exposing a simple health-check endpoint.
 
 The gateway sits in front of one or more downstream microservices (e.g. an
 AI service) and provides cross-cutting concerns such as authentication,
@@ -14,6 +14,8 @@ rate-limiting, caching, and request logging.
 """
 
 import sys
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -35,6 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.api.v1.router import router as v1_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.db.session import init_db
 from app.exceptions.handlers import register_exception_handlers
 from app.middlewares.auth_middleware import AuthMiddleware
 from app.middlewares.logging_middleware import LoggingMiddleware
@@ -53,12 +56,32 @@ configure_logging()
 # ``get_settings`` returns a singleton, so this is cheap to call repeatedly.
 settings = get_settings()
 
+
+# ---------------------------------------------------------------------------
+# Lifespan handler
+# ---------------------------------------------------------------------------
+# The lifespan context manager replaces the deprecated ``@app.on_event``
+# decorators.  It runs once when the application starts up and once when it
+# shuts down.  On startup we create all database tables that are defined by
+# models inheriting from ``Base`` (e.g. ``User``, ``Objective``).
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Application lifecycle: create database tables on startup.
+
+    Calls :func:`init_db` which uses ``Base.metadata.create_all`` to
+    create all tables defined by ORM models.  This is idempotent — it
+    only creates tables that do not already exist.
+    """
+    await init_db()
+    yield
+
+
 # ---------------------------------------------------------------------------
 # FastAPI application factory
 # ---------------------------------------------------------------------------
 # Create the FastAPI application instance.  The ``title`` and ``version``
 # are surfaced in the auto-generated OpenAPI documentation.
-app = FastAPI(title=settings.app_name, version="0.1.0")
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
 # Middleware registration

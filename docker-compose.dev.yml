@@ -9,8 +9,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://novaiax:novaiax@host.docker.internal:5432/novaiax
-      REDIS_URL: redis://host.docker.internal:6379/0
+      DATABASE_URL: postgresql+asyncpg://novaiax:novaiax@192.168.15.4:5432/novaiax
+      REDIS_URL: redis://192.168.15.4:6379/0
       SECRET_KEY: change-me-in-production
       DEFAULT_ADMIN_PASSWORD: changeme123
       ALLOWED_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'

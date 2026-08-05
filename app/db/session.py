@@ -16,7 +16,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax",
+    "postgresql+asyncpg://novaiax:novaiax@192.168.15.4:5432/novaiax",
 )
 
 # Create the async engine.  ``echo=False`` disables SQL query logging;

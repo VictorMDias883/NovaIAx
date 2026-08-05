@@ -29,6 +29,7 @@ from starlette.responses import JSONResponse
 
 from app.api.deps import get_current_user
 from app.core.logging import get_logger
+from app.core.security import AuthService
 
 logger = get_logger(__name__)
 
@@ -68,7 +69,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # ``get_current_user`` is an async dependency that validates
             # the JWT or API key and returns the user identity.  If it
             # raises an ``HTTPException``, we catch it below.
-            await get_current_user(request=request)
+            #
+            # We create the AuthService instance here and pass it
+            # explicitly because the middleware calls ``get_current_user``
+            # directly (not through FastAPI's dependency-injection
+            # container).  When called directly, FastAPI's ``Depends``
+            # and ``Header`` sentinels are NOT resolved, so we must
+            # supply the AuthService ourselves.
+            auth_service = AuthService()
+            await get_current_user(request=request, auth_service=auth_service)
         except HTTPException as exc:
             # 401 (Unauthorized) and 429 (Too Many Requests) are expected
             # authentication/rate-limit failures — return them as-is.

@@ -86,9 +86,24 @@ async def get_current_user(
     Raises:
         HTTPException(401): If authentication fails for any reason.
     """
+    # Read headers directly from the request so that this function works
+    # both when called as a FastAPI dependency (where Header params are
+    # resolved by the DI container) and when called directly from the
+    # AuthMiddleware (where Header params are NOT resolved).
+    authorization = request.headers.get("Authorization")
+    api_key = request.headers.get("x-api-key")
+
+    # When called directly from the middleware (not through FastAPI's
+    # dependency injection), ``auth_service`` will be the raw ``Depends``
+    # sentinel object rather than an ``AuthService`` instance.  Detect
+    # that situation and create a real instance on the fly.
+    if not isinstance(auth_service, AuthService):
+        auth_service = AuthService()
+
     # --- JWT Bearer token authentication ---
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
+
         try:
             payload = auth_service.decode_token(token)
         except Exception as exc:
@@ -97,6 +112,7 @@ async def get_current_user(
         # must be used with the /auth/refresh endpoint instead.
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
+
         return {"id": payload.get("sub"), "username": payload.get("sub"), "roles": []}
 
     # --- API key authentication ---

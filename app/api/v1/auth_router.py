@@ -67,10 +67,9 @@ async def register_user(payload: RegisterUserRequest, session: AsyncSession = De
     # from the async generator.  This is equivalent to calling
     # ``SessionLocal()`` directly but reuses the same dependency.
     async for db_session in get_session():
-        print("Não foi encontrada a seção")
         break
     service = AuthService(db_session)
-    print("chegoy")
+
     command = RegisterUserCommand(full_name=payload.full_name, email=str(payload.email), password=payload.password)
     result = await service.register(command)
     return AuthResponse(**result)

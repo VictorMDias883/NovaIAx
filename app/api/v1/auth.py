@@ -25,35 +25,6 @@ from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserRe
 # The prefix is relative to the ``/api/v1`` mount point in ``main.py``.
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-
-@router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, auth_service: AuthService = Depends(get_auth_service)) -> TokenResponse:
-    """Authenticate a user and return JWT tokens.
-
-    The user is looked up in the in-memory user store (seeded with the
-    default admin account).  If authentication succeeds, both an access
-    token and a refresh token are returned.
-
-    Args:
-        payload: Request body containing ``username`` and ``password``.
-        auth_service: The :class:`AuthService` dependency (in-memory).
-
-    Returns:
-        A :class:`TokenResponse` with ``access_token``, ``refresh_token``,
-        and ``token_type``.
-
-    Raises:
-        HTTPException(401): If the username or password is invalid.
-    """
-    user = auth_service.authenticate_user(payload.username, payload.password)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    return TokenResponse(
-        access_token=auth_service.create_access_token(user["username"]),
-        refresh_token=auth_service.create_refresh_token(user["username"]),
-    )
-
-
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(payload: RefreshRequest, auth_service: AuthService = Depends(get_auth_service)) -> TokenResponse:
     """Exchange a refresh token for a new pair of JWT tokens.

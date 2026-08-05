@@ -99,6 +99,7 @@ def decode_token(token: str, settings: Settings | None = None) -> dict[str, Any]
         The token payload as a dictionary.
     """
     settings = settings or get_settings()
+    
     return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
 
 

@@ -13,7 +13,7 @@ Responsibilities:
     - Return a plain dictionary representation of the created objective.
 """
 
-from datetime import datetime
+from datetime import datetime, UTC
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -62,7 +62,7 @@ class ObjectiveService:
         Raises:
             HTTPException(400): If ``due_date`` is in the past.
         """
-        if command.due_date < datetime.utcnow():
+        if command.due_date < datetime.now(UTC):
             raise HTTPException(status_code=400, detail="due_date cannot be in the past")
 
         repo = ObjectiveRepository(self.session)
