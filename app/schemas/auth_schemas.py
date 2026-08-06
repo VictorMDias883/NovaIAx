@@ -26,6 +26,8 @@ class RegisterUserRequest(BaseModel):
             :meth:`validate_password`).
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     full_name: str = Field(min_length=2, max_length=120)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
@@ -67,11 +69,31 @@ class AuthResponse(BaseModel):
 
     Attributes:
         user: A dictionary containing the user's ``id``, ``full_name``,
-            and ``email``.
+            ``email``, and ``role``.
         access_token: A short-lived JWT access token.
         refresh_token: A long-lived JWT refresh token.
     """
 
     user: dict[str, object]
+    access_token: str
+    refresh_token: str
+
+
+class RefreshRequest(BaseModel):
+    """Request body for the ``POST /auth/refresh`` endpoint."""
+
+    refresh_token: str = Field(min_length=1)
+
+
+class TokenResponse(BaseModel):
+    """Response body returned by refresh token endpoints."""
+
+    access_token: str
+    refresh_token: str
+
+
+class TokenResponse(BaseModel):
+    """Response body returned by refresh token endpoints."""
+
     access_token: str
     refresh_token: str

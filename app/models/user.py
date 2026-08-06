@@ -8,9 +8,10 @@ This model represents an application user.  Each user can own multiple
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import DateTime, Enum as SQLEnum, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 # ``TYPE_CHECKING`` is used to avoid a circular import at runtime.
@@ -20,6 +21,13 @@ if TYPE_CHECKING:
     from app.models.objective import Objective
 
 from app.db.session import Base
+
+
+class UserRole(str, Enum):
+    """Application-level user roles."""
+
+    USER = "USER"
+    ADMIN = "ADMIN"
 
 
 class User(Base):
@@ -34,6 +42,9 @@ class User(Base):
             login identifier in the database-backed auth flow.
         password_hash: PBKDF2 hash of the user's password.  The raw
             password is never stored.
+        role: The user's RBAC role, persisted as a native PostgreSQL enum.
+        refresh_token_valid_after: Timestamp that invalidates refresh
+            tokens issued before it.
         created_at: Timestamp of when the user was created, set
             automatically by the database (``func.now()``).
         objectives: Relationship to the user's :class:`Objective`
@@ -48,6 +59,17 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[UserRole] = mapped_column(
+        SQLEnum(UserRole, name="user_role", native_enum=True),
+        nullable=False,
+        server_default=UserRole.USER.value,
+        index=True,
+    )
+    refresh_token_valid_after: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # One-to-many relationship: one user → many objectives.

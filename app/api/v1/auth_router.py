@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.commands.login_command import LoginCommand
 from app.commands.register_user_command import RegisterUserCommand
 from app.db.session import SessionLocal
-from app.schemas.auth_schemas import AuthResponse, LoginRequest, RegisterUserRequest
+from app.schemas.auth_schemas import AuthResponse, LoginRequest, RefreshRequest, RegisterUserRequest, TokenResponse
 from app.services.auth_service import AuthService
 
 # Create a sub-router with the ``/auth`` prefix and ``auth`` tag.
@@ -63,13 +63,7 @@ async def register_user(payload: RegisterUserRequest, session: AsyncSession = De
     Returns:
         An :class:`AuthResponse` with the user data and JWT tokens.
     """
-    # The ``async for ... break`` pattern extracts a single session
-    # from the async generator.  This is equivalent to calling
-    # ``SessionLocal()`` directly but reuses the same dependency.
-    async for db_session in get_session():
-        break
-    service = AuthService(db_session)
-
+    service = AuthService(session)
     command = RegisterUserCommand(full_name=payload.full_name, email=str(payload.email), password=payload.password)
     result = await service.register(command)
     return AuthResponse(**result)
@@ -92,9 +86,15 @@ async def login(payload: LoginRequest, session: AsyncSession = Depends(get_sessi
     Raises:
         HTTPException(401): If the email or password is invalid.
     """
-    async for db_session in get_session():
-        break
-    service = AuthService(db_session)
+    service = AuthService(session)
     command = LoginCommand(email=str(payload.email), password=payload.password)
     result = await service.login(command)
     return AuthResponse(**result)
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_tokens(payload: RefreshRequest, session: AsyncSession = Depends(get_session)) -> TokenResponse:
+    """Exchange a refresh token for a new access/refresh pair."""
+    service = AuthService(session)
+    result = await service.refresh(payload.refresh_token)
+    return TokenResponse(**result)

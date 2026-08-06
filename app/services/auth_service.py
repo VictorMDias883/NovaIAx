@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.commands.login_command import LoginCommand
 from app.commands.register_user_command import RegisterUserCommand
 from app.core.security import create_access_token, create_refresh_token, decode_token
+from app.models.user import UserRole
 from app.repositories.user_repository import UserRepository
 
 # Password hashing context — same configuration as in
@@ -55,24 +56,14 @@ class AuthService:
     async def register(self, command: RegisterUserCommand) -> dict[str, Any]:
         """Register a new user.
 
-        Steps:
-            1. Check if a user with the given email already exists.
-               If so, raise a 409 Conflict.
-            2. Hash the password with PBKDF2.
-            3. Create the user record via the repository.
-            4. Generate JWT access and refresh tokens.
-            5. Return a dict containing the user data and tokens.
-
-        Args:
-            command: A :class:`RegisterUserCommand` with the user's
-                full name, email, and plaintext password.
-
-        Returns:
-            A dictionary with ``user``, ``access_token``, and
-            ``refresh_token`` keys.
-
-        Raises:
-            HTTPException(409): If the email is already registered.
+        Rules:
+            - If no admin exists at registration time, the new user
+              becomes ADMIN.
+            - Otherwise the new user becomes USER.
+            - The role is determined entirely by the backend; the client
+              may not influence it.
+            - The admin existence check is performed inside the same
+              transaction as user creation.
         """
         repo = UserRepository(self.session)
         existing = await repo.get_by_email(command.email)
@@ -80,37 +71,64 @@ class AuthService:
             raise HTTPException(status_code=409, detail="User already exists")
 
         password_hash = pwd_context.hash(command.password)
-        user = await repo.create(full_name=command.full_name, email=command.email, password_hash=password_hash)
+        async with self.session.begin():
+            await repo.lock_users_table()
+            is_admin_present = await repo.exists_admin()
+            role = UserRole.USER if is_admin_present else UserRole.ADMIN
+            user = await repo.create(
+                full_name=command.full_name,
+                email=command.email,
+                password_hash=password_hash,
+                role=role,
+                commit=False,
+            )
+
         return {
             "user": {
                 "id": user.id,
                 "full_name": user.full_name,
                 "email": user.email,
+                "role": user.role.value,
             },
-            "access_token": create_access_token(str(user.id)),
+            "access_token": create_access_token(str(user.id), email=user.email, role=user.role.value),
             "refresh_token": create_refresh_token(str(user.id)),
         }
+    async def refresh(self, refresh_token: str) -> dict[str, Any]:
+        """Refresh access and refresh tokens using a valid refresh token."""
+        try:
+            payload = decode_token(refresh_token)
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail="Invalid refresh token") from exc
 
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        user_id = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        repo = UserRepository(self.session)
+        user = await repo.get_by_id(int(user_id))
+        if user is None:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        issued_at = payload.get("iat")
+        if issued_at is None:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        if datetime.fromtimestamp(int(issued_at), tz=timezone.utc) < user.refresh_token_valid_after:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        return {
+            "access_token": create_access_token(str(user.id), email=user.email, role=user.role.value),
+            "refresh_token": create_refresh_token(str(user.id)),
+        }
     async def login(self, command: LoginCommand) -> dict[str, Any]:
         """Authenticate a user and issue tokens.
 
-        Steps:
-            1. Look up the user by email.
-            2. Verify the password against the stored hash.
-            3. If either check fails, raise a 401 Unauthorized.
-            4. Generate JWT access and refresh tokens.
-            5. Return a dict containing the user data and tokens.
-
-        Args:
-            command: A :class:`LoginCommand` with the user's email
-                and plaintext password.
-
-        Returns:
-            A dictionary with ``user``, ``access_token``, and
-            ``refresh_token`` keys.
-
-        Raises:
-            HTTPException(401): If the email or password is invalid.
+        The returned JWT includes the user's current role.  This role is
+        a snapshot at login time and does not change for already-issued
+        tokens.
         """
         repo = UserRepository(self.session)
         user = await repo.get_by_email(command.email)
@@ -122,7 +140,8 @@ class AuthService:
                 "id": user.id,
                 "full_name": user.full_name,
                 "email": user.email,
+                "role": user.role.value,
             },
-            "access_token": create_access_token(str(user.id)),
+            "access_token": create_access_token(str(user.id), email=user.email, role=user.role.value),
             "refresh_token": create_refresh_token(str(user.id)),
         }

@@ -9,10 +9,10 @@ unit-tested with a mock repository.
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.user import User
+from app.models.user import User, UserRole
 
 
 class UserRepository:
@@ -47,7 +47,53 @@ class UserRepository:
         result = await self.session.execute(select(User).where(User.email == email))
         return result.scalar_one_or_none()
 
-    async def create(self, *, full_name: str, email: str, password_hash: str) -> User:
+    async def get_by_id(self, id: int, for_update: bool = False) -> User | None:
+        """Return a user by ID, optionally locking the row for update."""
+        stmt = select(User).where(User.id == id)
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def exists_admin(self, for_update: bool = False) -> bool:
+        """Return whether any admin exists in the system."""
+        stmt = select(User).where(User.role == UserRole.ADMIN).limit(1)
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    async def count_admins(self, for_update: bool = False) -> int:
+        """Return the number of admin users in the system."""
+        stmt = select(func.count()).select_from(User).where(User.role == UserRole.ADMIN)
+        if for_update:
+            stmt = stmt.with_for_update()
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
+    async def update_role(self, id: int, role: UserRole) -> User | None:
+        """Update a user's role and return the updated user."""
+        user = await self.get_by_id(id, for_update=True)
+        if user is None:
+            return None
+        user.role = role
+        await self.session.flush()
+        await self.session.refresh(user)
+        return user
+
+    async def lock_users_table(self) -> None:
+        """Acquire a lock on the users table to serialize role decisions."""
+        await self.session.execute(text("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE"))
+
+    async def create(
+        self,
+        *,
+        full_name: str,
+        email: str,
+        password_hash: str,
+        role: UserRole | None = None,
+        commit: bool = True,
+    ) -> User:
         """Create and persist a new user.
 
         The ``*`` in the parameter list enforces keyword-only arguments,
@@ -57,16 +103,18 @@ class UserRepository:
             full_name: The user's display name.
             email: The user's unique email address.
             password_hash: The PBKDF2 hash of the user's password.
+            role: Optional role to assign; defaults to the database default.
+            commit: Whether to commit the transaction immediately.
 
         Returns:
             The newly created :class:`User` instance (with ``id``
-            populated after ``commit`` and ``refresh``).
+            populated after ``refresh``).
         """
         user = User(full_name=full_name, email=email, password_hash=password_hash)
+        if role is not None:
+            user.role = role
         self.session.add(user)
-        await self.session.commit()
-        # ``refresh`` reloads the instance from the database, ensuring
-        # that server-generated values (e.g. ``id``, ``created_at``)
-        # are available on the returned object.
+        if commit:
+            await self.session.commit()
         await self.session.refresh(user)
         return user

@@ -25,6 +25,7 @@ from app.api.v1.auth import router as auth_router
 from app.api.v1.auth_router import router as auth_router_v2
 from app.api.v1.objective_router import router as objective_router
 from app.api.v1.proxy import router as proxy_router
+from app.api.v1.user_router import router as user_router
 
 # Create the top-level v1 router.  Individual sub-routers define their
 # own prefixes and tags.
@@ -35,4 +36,5 @@ router = APIRouter()
 router.include_router(auth_router)
 router.include_router(auth_router_v2)
 router.include_router(objective_router)
+router.include_router(user_router)
 router.include_router(proxy_router)

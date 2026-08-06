@@ -14,11 +14,17 @@ Key dependencies:
       the current user's identity (via JWT or API key).
 """
 
+from collections.abc import AsyncGenerator
+
 from fastapi import Depends, Header, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.security import AuthService
 from app.cache.redis_client import RedisClient
+from app.db.session import SessionLocal
+from app.models.user import UserRole
+from app.repositories.user_repository import UserRepository
 
 
 async def get_settings_dep() -> object:
@@ -50,11 +56,18 @@ async def get_redis_client() -> RedisClient:
     return RedisClient()
 
 
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Dependency that yields a database session for request-scoped use."""
+    async with SessionLocal() as session:
+        yield session
+
+
 async def get_current_user(
     request: Request,
     auth_service: AuthService = Depends(get_auth_service),
     authorization: str | None = Header(default=None, alias="Authorization"),
     api_key: str | None = Header(default=None, alias="x-api-key"),
+    session: AsyncSession | None = Depends(get_db_session),
 ) -> dict[str, object]:
     """Authenticate the current request and return the user identity.
 
@@ -113,11 +126,35 @@ async def get_current_user(
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
 
-        return {"id": payload.get("sub"), "username": payload.get("sub"), "roles": []}
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        if isinstance(session, AsyncSession):
+            user = await UserRepository(session).get_by_id(int(user_id))
+        else:
+            async with SessionLocal() as temp_session:
+                user = await UserRepository(temp_session).get_by_id(int(user_id))
+
+        if user is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        return {
+            "id": str(user.id),
+            "email": user.email,
+            "role": payload.get("role", user.role.value),
+        }
 
     # --- API key authentication ---
     if api_key and await auth_service.authenticate_api_key(api_key):
-        return {"id": "api-key", "username": "api-key", "roles": ["service"]}
+        return {"id": "api-key", "email": "api-key", "role": "SERVICE"}
 
     # --- No valid credentials provided ---
     raise HTTPException(status_code=401, detail="Authentication required")
+
+
+async def require_admin(current_user: dict = Depends(get_current_user)) -> dict[str, object]:
+    """Require that the current user is an administrator."""
+    if current_user.get("role") != UserRole.ADMIN.value:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    return current_user

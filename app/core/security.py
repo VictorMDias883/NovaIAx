@@ -35,20 +35,28 @@ from app.core.config import Settings, get_settings
 # Module-level JWT helpers
 # ---------------------------------------------------------------------------
 
-def create_access_token(subject: str, settings: Settings | None = None) -> str:
+def create_access_token(
+    subject: str,
+    email: str | None = None,
+    role: str | None = None,
+    settings: Settings | None = None,
+) -> str:
     """Create a short-lived JWT **access token**.
 
     The token contains:
-        - ``sub``: the subject (typically the user ID).
-        - ``type``: always ``"access"`` (used to distinguish from refresh tokens).
+        - ``sub``: The subject (typically the user ID).
+        - ``email``: The user's email.
+        - ``role``: The user's current RBAC role at login time.
+        - ``type``: always ``"access"``.
         - ``iat``: issued-at timestamp (UTC).
         - ``exp``: expiration timestamp (UTC), ``access_token_ttl_minutes``
           minutes from now.
 
     Args:
         subject: The entity the token represents (usually a user ID).
-        settings: Optional :class:`Settings` instance.  If omitted, the
-            global singleton is used.
+        email: Optional email to include in the token payload.
+        role: Optional role to include in the token payload.
+        settings: Optional :class:`Settings` instance.
 
     Returns:
         A compact JWT string signed with the configured secret key.
@@ -61,10 +69,17 @@ def create_access_token(subject: str, settings: Settings | None = None) -> str:
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.access_token_ttl_minutes)).timestamp()),
     }
+    if email is not None:
+        payload["email"] = email
+    if role is not None:
+        payload["role"] = role
     return jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(subject: str, settings: Settings | None = None) -> str:
+def create_refresh_token(
+    subject: str,
+    settings: Settings | None = None,
+) -> str:
     """Create a long-lived JWT **refresh token**.
 
     Structurally identical to :func:`create_access_token` but with
