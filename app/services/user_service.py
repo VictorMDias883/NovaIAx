@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.commands.demote_user_command import DemoteUserCommand
+from app.commands.delete_user_command import DeleteUserCommand
 from app.commands.promote_user_command import PromoteUserCommand
 from app.core.logging import get_logger
 from app.models.user import User, UserRole
@@ -29,7 +30,7 @@ class UserService:
         self._ensure_admin(actor)
 
         async with self.session.begin():
-            target = await self.repo.find_by_id(command.target_id, for_update=True)
+            target = await self.repo.get_by_id(command.target_id, for_update=True)
             if target is None:
                 raise HTTPException(status_code=404, detail="User not found")
 
@@ -52,7 +53,7 @@ class UserService:
         self._ensure_admin(actor)
 
         async with self.session.begin():
-            target = await self.repo.find_by_id(command.target_id, for_update=True)
+            target = await self.repo.get_by_id(command.target_id, for_update=True)
             if target is None:
                 raise HTTPException(status_code=404, detail="User not found")
 
@@ -73,6 +74,28 @@ class UserService:
             extra={"actor_id": actor.get("id"), "target_id": target.id},
         )
         return {"message": "User demoted to regular user."}
+
+    async def delete(self, actor: dict[str, Any], command: DeleteUserCommand) -> dict[str, str]:
+        """Delete a user account by ID."""
+        self._ensure_admin(actor)
+
+        async with self.session.begin():
+            target = await self.repo.get_by_id(command.target_id, for_update=True)
+            if target is None:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            if target.role == UserRole.ADMIN:
+                admin_count = await self.repo.count_admins(for_update=True)
+                if admin_count <= 1:
+                    raise HTTPException(status_code=400, detail="Cannot delete the last administrator.")
+
+            await self.session.delete(target)
+
+        logger.info(
+            "User deleted",
+            extra={"actor_id": actor.get("id"), "target_id": target.id},
+        )
+        return {"message": "User deleted."}
 
     async def list_users(self, page: int = 1, limit: int = 20) -> dict[str, Any]:
         """Return a paginated list of users without sensitive fields."""

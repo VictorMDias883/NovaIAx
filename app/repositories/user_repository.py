@@ -65,9 +65,12 @@ class UserRepository:
 
     async def count_admins(self, for_update: bool = False) -> int:
         """Return the number of admin users in the system."""
-        stmt = select(func.count()).select_from(User).where(User.role == UserRole.ADMIN)
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = select(User.id).where(User.role == UserRole.ADMIN).with_for_update()
+            result = await self.session.execute(stmt)
+            return len(result.scalars().all())
+
+        stmt = select(func.count()).select_from(User).where(User.role == UserRole.ADMIN)
         result = await self.session.execute(stmt)
         return result.scalar_one()
 
@@ -80,6 +83,19 @@ class UserRepository:
         await self.session.flush()
         await self.session.refresh(user)
         return user
+
+    async def delete_by_id(self, id: int, for_update: bool = False) -> bool:
+        """Delete a user by ID.
+
+        If ``for_update`` is set, the target row is locked before deletion.
+        Returns ``True`` when a user was found and marked for deletion,
+        otherwise ``False``.
+        """
+        user = await self.get_by_id(id, for_update=for_update)
+        if user is None:
+            return False
+        await self.session.delete(user)
+        return True
 
     async def lock_users_table(self) -> None:
         """Acquire a lock on the users table to serialize role decisions."""
@@ -116,5 +132,7 @@ class UserRepository:
         self.session.add(user)
         if commit:
             await self.session.commit()
+        else:
+            await self.session.flush()
         await self.session.refresh(user)
         return user

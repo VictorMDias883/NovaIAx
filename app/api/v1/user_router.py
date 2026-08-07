@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_admin
 from app.commands.demote_user_command import DemoteUserCommand
+from app.commands.delete_user_command import DeleteUserCommand
 from app.commands.promote_user_command import PromoteUserCommand
 from app.db.session import SessionLocal
 from app.schemas.user_schemas import ActionResponse, UserListResponse
@@ -37,6 +38,17 @@ async def demote_user(
 ) -> ActionResponse:
     service = UserService(session)
     result = await service.demote(current_user, DemoteUserCommand(target_id=user_id))
+    return ActionResponse(**result)
+
+
+@router.delete("/{user_id}", response_model=ActionResponse)
+async def delete_user(
+    user_id: int,
+    current_user: dict = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ActionResponse:
+    service = UserService(session)
+    result = await service.delete(current_user, DeleteUserCommand(target_id=user_id))
     return ActionResponse(**result)
 
 

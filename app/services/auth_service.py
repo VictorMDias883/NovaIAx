@@ -66,12 +66,13 @@ class AuthService:
               transaction as user creation.
         """
         repo = UserRepository(self.session)
-        existing = await repo.get_by_email(command.email)
-        if existing:
-            raise HTTPException(status_code=409, detail="User already exists")
+        
 
         password_hash = pwd_context.hash(command.password)
         async with self.session.begin():
+            existing = await repo.get_by_email(command.email)
+            if existing:
+                raise HTTPException(status_code=409, detail="User already exists")
             await repo.lock_users_table()
             is_admin_present = await repo.exists_admin()
             role = UserRole.USER if is_admin_present else UserRole.ADMIN
