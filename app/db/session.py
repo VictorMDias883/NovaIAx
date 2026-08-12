@@ -5,23 +5,22 @@ This module sets up the SQLAlchemy asynchronous engine and session
 factory used throughout the application.  It also defines the
 declarative base class that all ORM models inherit from.
 
-The application defaults to PostgreSQL via the ``DATABASE_URL``
-environment variable, matching the Docker Compose stack.
+The connection URL comes from the :class:`Settings` singleton
+(``app.core.config``), which reads the ``DATABASE_URL`` environment
+variable.  The application defaults to PostgreSQL, matching the
+Docker Compose stack.
 """
-
-import os
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://novaiax:novaiax@192.168.15.4:5432/novaiax",
-)
+from app.core.config import get_settings
+
+settings = get_settings()
 
 # Create the async engine.  ``echo=False`` disables SQL query logging;
 # set to ``True`` for debugging.
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine = create_async_engine(settings.database_url, echo=False)
 
 # Session factory: each call to ``SessionLocal()`` returns a new
 # ``AsyncSession`` instance.  ``expire_on_commit=False`` prevents

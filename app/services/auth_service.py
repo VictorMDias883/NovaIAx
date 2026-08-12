@@ -17,23 +17,17 @@ Responsibilities:
     - Issue JWT access and refresh tokens on successful authentication.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
-from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.commands.login_command import LoginCommand
 from app.commands.register_user_command import RegisterUserCommand
-from app.core.security import create_access_token, create_refresh_token, decode_token
+from app.core.security import create_access_token, create_refresh_token, decode_token, pwd_context
 from app.models.user import UserRole
 from app.repositories.user_repository import UserRepository
-
-# Password hashing context — same configuration as in
-# :mod:`app.core.security`.  PBKDF2 with SHA-256 is used because it
-# is built into Python's standard library (no external C dependencies).
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
 class AuthService:
@@ -66,7 +60,6 @@ class AuthService:
               transaction as user creation.
         """
         repo = UserRepository(self.session)
-        
 
         password_hash = pwd_context.hash(command.password)
         async with self.session.begin():

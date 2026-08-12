@@ -98,8 +98,10 @@ class UserRepository:
         return True
 
     async def lock_users_table(self) -> None:
-        """Acquire a lock on the users table to serialize role decisions."""
-        await self.session.execute(text("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE"))
+        """Acquire a lock on the users table to serialize role decisions (PostgreSQL only)."""
+        bind = self.session.get_bind()
+        if bind and bind.dialect.name == "postgresql":
+            await self.session.execute(text("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE"))
 
     async def create(
         self,

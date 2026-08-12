@@ -28,20 +28,31 @@ def client() -> TestClient:
 
     The ``TestClient`` wraps the FastAPI app and allows synchronous
     HTTP requests to be made against it in-process (no network I/O).
+    Using ``with TestClient(app)`` ensures the application lifespan
+    events (startup/shutdown) are executed, creating database tables.
     """
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 
 def test_login_returns_tokens(client: TestClient) -> None:
-    """Verify that the default admin can log in and receive JWT tokens.
+    """Verify that a registered user can log in and receive JWT tokens.
 
-    Sends a POST to ``/api/v1/auth/login`` with the default admin
-    credentials (from :class:`Settings`).  Asserts that the response
-    is 200 OK and contains both ``access_token`` and ``refresh_token``.
+    Sends a POST to ``/api/v1/auth/register`` followed by ``/api/v1/auth/login``.
+    Asserts that the login response is 200 OK and contains both
+    ``access_token`` and ``refresh_token``.
     """
+    client.post(
+        "/api/v1/auth/register",
+        json={
+            "full_name": "Admin Test",
+            "email": "admin@example.com",
+            "password": "Password123",
+        },
+    )
     response = client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "changeme123"},
+        json={"email": "admin@example.com", "password": "Password123"},
     )
     assert response.status_code == 200
     body = response.json()

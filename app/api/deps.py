@@ -7,67 +7,72 @@ are the recommended way to share logic (e.g. authentication, database
 sessions, service instances) across multiple endpoints.
 
 Key dependencies:
-    - :func:`get_settings_dep` — provides the :class:`Settings` singleton.
-    - :func:`get_auth_service` — provides an :class:`AuthService` instance.
+    - :func:`get_session` — provides a request-scoped :class:`AsyncSession`.
+    - :func:`get_api_key_service` — provides an :class:`ApiKeyService`.
     - :func:`get_redis_client` — provides a :class:`RedisClient` instance.
     - :func:`get_current_user` — authenticates the request and returns
       the current user's identity (via JWT or API key).
+    - :func:`require_admin` — requires the current user to be an admin.
 """
 
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
-from app.core.security import AuthService
 from app.cache.redis_client import RedisClient
+from app.core.config import get_settings
+from app.core.security import ApiKeyService, decode_token
 from app.db.session import SessionLocal
-from app.models.user import UserRole
+from app.models.user import User, UserRole
 from app.repositories.user_repository import UserRepository
 
 
-async def get_settings_dep() -> object:
-    """Dependency that provides the :class:`Settings` singleton.
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """Dependency that yields a request-scoped database session.
 
-    Returns:
-        The global :class:`Settings` instance.
+    Uses an async context manager so the session is always closed after
+    the request completes.
     """
-    return get_settings()
-
-
-async def get_auth_service() -> AuthService:
-    """Dependency that provides an :class:`AuthService` instance.
-
-    A new instance is created for each request.  The service uses the
-    in-memory user store (seeded with the default admin account) and
-    a Redis client for API-key validation.
-    """
-    return AuthService()
-
-
-async def get_redis_client() -> RedisClient:
-    """Dependency that provides a :class:`RedisClient` instance.
-
-    A new instance is created for each request.  The client lazily
-    connects to Redis (or falls back to an in-memory store) on first
-    use.
-    """
-    return RedisClient()
-
-
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency that yields a database session for request-scoped use."""
     async with SessionLocal() as session:
         yield session
 
 
+async def get_api_key_service() -> ApiKeyService:
+    """Dependency that provides an :class:`ApiKeyService` instance.
+
+    A new instance is created for each request.  The service lazily
+    connects to Redis (or falls back to an in-memory store).
+    """
+    return ApiKeyService()
+
+
+async def get_redis_client() -> RedisClient:
+    """Dependency that provides a :class:`RedisClient` instance."""
+    return RedisClient()
+
+
+async def _load_user(user_id: str, session: AsyncSession | None) -> User:
+    """Load a user by ID, opening a temporary session when needed.
+
+    ``get_current_user`` is called both by FastAPI's DI container (which
+    provides a real session) and directly by the auth middleware (which
+    cannot resolve dependencies).  This helper normalises both paths.
+    """
+    if isinstance(session, AsyncSession):
+        user = await UserRepository(session).get_by_id(int(user_id))
+    else:
+        async with SessionLocal() as temp_session:
+            user = await UserRepository(temp_session).get_by_id(int(user_id))
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user
+
+
 async def get_current_user(
     request: Request,
-    auth_service: AuthService = Depends(get_auth_service),
-    authorization: str | None = Header(default=None, alias="Authorization"),
-    api_key: str | None = Header(default=None, alias="x-api-key"),
-    session: AsyncSession | None = Depends(get_db_session),
+    api_key_service: ApiKeyService = Depends(get_api_key_service),
+    session: AsyncSession | None = Depends(get_session),
 ) -> dict[str, object]:
     """Authenticate the current request and return the user identity.
 
@@ -85,40 +90,35 @@ async def get_current_user(
     If neither mechanism succeeds, a 401 Unauthorized is raised.
 
     Args:
-        request: The incoming :class:`Request` (unused directly, but
-            required so FastAPI can inject it).
-        auth_service: The :class:`AuthService` used for token decoding
-            and API-key validation.
-        authorization: The ``Authorization`` header value (if present).
-        api_key: The ``X-API-Key`` header value (if present).
+        request: The incoming :class:`Request`.
+        api_key_service: The :class:`ApiKeyService` used for API-key
+            validation.
+        session: A request-scoped database session (or ``None`` when
+            called outside FastAPI's DI container).
 
     Returns:
-        A dictionary with ``id``, ``username``, and ``roles`` keys
-        representing the authenticated user.
+        A dictionary with ``id``, ``full_name``, ``email``, and ``role``
+        keys representing the authenticated user.
 
     Raises:
         HTTPException(401): If authentication fails for any reason.
     """
-    # Read headers directly from the request so that this function works
-    # both when called as a FastAPI dependency (where Header params are
-    # resolved by the DI container) and when called directly from the
-    # AuthMiddleware (where Header params are NOT resolved).
     authorization = request.headers.get("Authorization")
     api_key = request.headers.get("x-api-key")
 
     # When called directly from the middleware (not through FastAPI's
-    # dependency injection), ``auth_service`` will be the raw ``Depends``
-    # sentinel object rather than an ``AuthService`` instance.  Detect
-    # that situation and create a real instance on the fly.
-    if not isinstance(auth_service, AuthService):
-        auth_service = AuthService()
+    # dependency injection), ``api_key_service`` will be the raw
+    # ``Depends`` sentinel object rather than an ``ApiKeyService``
+    # instance.  Detect that situation and create a real instance.
+    if not isinstance(api_key_service, ApiKeyService):
+        api_key_service = ApiKeyService()
 
     # --- JWT Bearer token authentication ---
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ", 1)[1]
 
         try:
-            payload = auth_service.decode_token(token)
+            payload = decode_token(token)
         except Exception as exc:
             raise HTTPException(status_code=401, detail="Invalid token") from exc
         # Only "access" tokens are accepted here; "refresh" tokens
@@ -130,24 +130,17 @@ async def get_current_user(
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-        if isinstance(session, AsyncSession):
-            user = await UserRepository(session).get_by_id(int(user_id))
-        else:
-            async with SessionLocal() as temp_session:
-                user = await UserRepository(temp_session).get_by_id(int(user_id))
-
-        if user is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-
+        user = await _load_user(str(user_id), session)
         return {
             "id": str(user.id),
+            "full_name": user.full_name,
             "email": user.email,
             "role": payload.get("role", user.role.value),
         }
 
     # --- API key authentication ---
-    if api_key and await auth_service.authenticate_api_key(api_key):
-        return {"id": "api-key", "email": "api-key", "role": "SERVICE"}
+    if api_key and await api_key_service.authenticate_api_key(api_key):
+        return {"id": "api-key", "full_name": "API Key", "email": "api-key", "role": "SERVICE"}
 
     # --- No valid credentials provided ---
     raise HTTPException(status_code=401, detail="Authentication required")
@@ -158,3 +151,8 @@ async def require_admin(current_user: dict = Depends(get_current_user)) -> dict[
     if current_user.get("role") != UserRole.ADMIN.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
     return current_user
+
+
+def get_settings_dep() -> object:
+    """Dependency that provides the :class:`Settings` singleton."""
+    return get_settings()

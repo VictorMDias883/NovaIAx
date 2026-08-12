@@ -1,22 +1,14 @@
-from collections.abc import AsyncGenerator
-
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_admin
+from app.api.deps import get_session, require_admin
 from app.commands.demote_user_command import DemoteUserCommand
 from app.commands.delete_user_command import DeleteUserCommand
 from app.commands.promote_user_command import PromoteUserCommand
-from app.db.session import SessionLocal
 from app.schemas.user_schemas import ActionResponse, UserListResponse
 from app.services.user_service import UserService
 
 router = APIRouter(prefix="/users", tags=["users"])
-
-
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with SessionLocal() as session:
-        yield session
 
 
 @router.patch("/{user_id}/promote", response_model=ActionResponse)

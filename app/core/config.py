@@ -82,8 +82,9 @@ class Settings(BaseSettings):
     api_key_header: str = "X-API-Key"
     default_admin_username: str = "admin"
     default_admin_password: str = Field(
-        default_factory=lambda: os.getenv("DEFAULT_ADMIN_PASSWORD", "changeme123")
+        default_factory=lambda: os.getenv("DEFAULT_ADMIN_PASSWORD", "")
     )
+
     # Master API key that bypasses per-key validation.  When set, any request
     # carrying this key is treated as fully trusted.
     master_api_key: str | None = Field(default_factory=lambda: os.getenv("MASTER_API_KEY"))
@@ -105,6 +106,12 @@ class Settings(BaseSettings):
         )
     )
 
+    # --- Groq Cloud AI settings ---------------------------------------------
+    groq_api_key: str | None = Field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
+    groq_api_base_url: str = Field(default_factory=lambda: os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/v1"))
+    groq_api_model: str = Field(default_factory=lambda: os.getenv("GROQ_API_MODEL", "llama-3.3-70b-versatile"))
+    groq_api_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("GROQ_API_TIMEOUT_SECONDS", "10")))
+
     # Pydantic-settings configuration: read from ``.env`` file, case-insensitive.
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
 
@@ -125,10 +132,38 @@ class Settings(BaseSettings):
 
 
 # ---------------------------------------------------------------------------
+# Module-level configuration validation (runs on import)
+# ---------------------------------------------------------------------------
+# Warn if the default weak admin password is in use, so operators are
+# aware before the application starts serving traffic.
+
+
+def _validate_admin_password() -> None:
+    """Warn if the default weak admin password is in use.
+
+    The default value ``""`` (empty string) is not secure.
+    Production deployments must set ``DEFAULT_ADMIN_PASSWORD`` via
+    an environment variable.
+    """
+    from app.core.logging import get_logger
+
+    settings = get_settings()
+    if not settings.default_admin_password:
+        logger = get_logger(__name__)
+        logger.warning(
+            "DEFAULT_ADMIN_PASSWORD is not set - using empty default. "
+            "Set the DEFAULT_ADMIN_PASSWORD environment variable "
+            "with a strong password for production deployments.",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Singleton accessor
 # ---------------------------------------------------------------------------
 # The settings object is cached in this module-level variable so that
 # ``get_settings()`` always returns the same instance after the first call.
+# ---------------------------------------------------------------------------
+
 _settings: Settings | None = None
 
 
@@ -142,4 +177,5 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = Settings()
+        _validate_admin_password()
     return _settings

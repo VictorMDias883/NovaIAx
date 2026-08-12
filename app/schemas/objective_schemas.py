@@ -33,6 +33,10 @@ class ObjectiveResponse(BaseModel):
         id: The database-generated objective ID.
         title: The objective's title.
         description: The objective's description (may be ``None``).
+        roadmap: The AI-generated roadmap for the objective (may be
+            ``None`` until generated).
+        roadmap_updated_at: Timestamp of the last roadmap generation
+            (may be ``None`` until generated).
         due_date: The objective's deadline.
         user_id: The ID of the user who owns this objective.
     """
@@ -40,5 +44,7 @@ class ObjectiveResponse(BaseModel):
     id: int
     title: str
     description: str | None
+    roadmap: str | None = None
+    roadmap_updated_at: datetime | None = None
     due_date: datetime
     user_id: int

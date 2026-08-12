@@ -23,15 +23,31 @@ a *first line of defence* — if a request passes the middleware, it is
 guaranteed to be from an authenticated source.
 """
 
+import re
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from app.api.deps import get_current_user
 from app.core.logging import get_logger
-from app.core.security import AuthService
+from app.core.security import ApiKeyService
+
+# Public path prefixes compiled as regex for efficient matching.
+_PUBLIC_PATH_PREFIXES = [
+    re.compile(r"^/auth"),
+    re.compile(r"^/api/v1/auth"),
+    re.compile(r"^/docs"),
+    re.compile(r"^/openapi"),
+    re.compile(r"^/health$"),
+]
+
 
 logger = get_logger(__name__)
+
+
+def _is_public_path(path: str) -> bool:
+    """Check if a path should skip authentication."""
+    return any(pattern.match(path) for pattern in _PUBLIC_PATH_PREFIXES)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -53,43 +69,19 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         # --- Public paths: skip authentication ---
-        # These endpoints are accessible without credentials.
-        if (
-            path.startswith("/auth")
-            or "/auth/" in path
-            or path.startswith("/docs")
-            or path.startswith("/openapi")
-            or path == "/health"
-            or "/api/v1/auth" in path
-        ):
+        if _is_public_path(path):
             return await call_next(request)
 
         # --- Protected paths: require authentication ---
         try:
-            # ``get_current_user`` is an async dependency that validates
-            # the JWT or API key and returns the user identity.  If it
-            # raises an ``HTTPException``, we catch it below.
-            #
-            # We create the AuthService instance here and pass it
-            # explicitly because the middleware calls ``get_current_user``
-            # directly (not through FastAPI's dependency-injection
-            # container).  When called directly, FastAPI's ``Depends``
-            # and ``Header`` sentinels are NOT resolved, so we must
-            # supply the AuthService ourselves.
-            auth_service = AuthService()
-            await get_current_user(request=request, auth_service=auth_service)
+            api_key_service = ApiKeyService()
+            await get_current_user(request=request, api_key_service=api_key_service)
         except HTTPException as exc:
-            # 401 (Unauthorized) and 429 (Too Many Requests) are expected
-            # authentication/rate-limit failures — return them as-is.
             if exc.status_code in {401, 429}:
                 return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-            # Any other HTTPException is unexpected — return a generic 500.
             return JSONResponse(status_code=500, content={"detail": "Authentication failed"})
         except Exception as exc:
-            # Catch-all for unexpected errors (e.g. Redis connection
-            # failures during API-key validation).  Log the full
-            # traceback and return a 500.
-            logger.exception("Authentication middleware failed", extra={"path": request.url.path})
+            logger.exception("Authentication middleware failed", extra={"path": path})
             return JSONResponse(status_code=500, content={"detail": "Authentication failed"})
 
         # Authentication succeeded — forward the request.

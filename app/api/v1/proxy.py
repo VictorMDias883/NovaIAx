@@ -30,11 +30,10 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from app.api.deps import get_auth_service, get_current_user, get_redis_client
+from app.api.deps import get_current_user, get_redis_client
 from app.cache.redis_client import RedisClient
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.core.security import AuthService
 
 # Create a sub-router with the ``/proxy`` prefix and ``proxy`` tag.
 router = APIRouter(prefix="/proxy", tags=["proxy"])
@@ -73,7 +72,6 @@ async def proxy_request(
     request: Request,
     service_name: str,
     redis_client: RedisClient = Depends(get_redis_client),
-    auth_service: AuthService = Depends(get_auth_service),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> Response:
     """Forward an incoming request to a downstream service.
@@ -99,8 +97,6 @@ async def proxy_request(
         service_name: The path parameter capturing the service name
             and sub-path (e.g. ``"ai/chat"``).
         redis_client: Redis client for caching (injected).
-        auth_service: Auth service (injected, used for type-checking
-            the dependency chain).
         current_user: The authenticated user's identity (injected).
 
     Returns:

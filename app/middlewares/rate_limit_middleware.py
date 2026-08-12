@@ -1,35 +1,28 @@
 """
 Rate-limiting middleware.
 
-This middleware implements a simple **sliding-window** rate limiter.
-For each client IP, it tracks the timestamps of recent requests within
-a 60-second window and rejects requests that exceed the configured
-limit.
+This middleware implements a simple **sliding-window** rate limiter
+backed by Redis sorted sets.  For each client IP, it tracks request
+timestamps in a Redis sorted set, allowing the limiter to work
+correctly across multiple workers/processes.
 
 Two rate limits are supported:
     - ``rate_limit_default`` (60 req/min) — applied to all endpoints.
-    - ``rate_limit_ai`` (10 req/min) — applied to endpoints whose path
-      contains ``/ai/`` (typically the proxied AI service, which is
-      more expensive to serve).
+    - ``rate_limit_ai`` (10 req/min) — applied to AI endpoints (paths
+      containing ``/ai/`` or ``/agents/general``), which are more
+      expensive to serve.
 
-The rate-limit state is stored in-memory (``defaultdict(list)``).  In a
-multi-process or multi-worker deployment, this would need to be
-backed by a shared store (e.g. Redis sorted sets, which the
-:class:`RedisClient` already supports via ``zadd`` / ``zremrangebyscore``
-/ ``zcard``).
-
-When a rate limit is exceeded, the middleware returns a 429 response
-with ``Retry-After`` and ``X-RateLimit-*`` headers, following common
-API conventions.
+The sliding window is 60 seconds.  Timestamps outside this window
+are removed using ``zremrangebyscore`` before checking the count.
 """
 
-from collections import defaultdict
 from time import time
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
+from app.cache.redis_client import RedisClient
 from app.core.config import get_settings
 from app.core.logging import get_logger
 
@@ -37,7 +30,7 @@ logger = get_logger(__name__)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Middleware that enforces per-client request-rate limits."""
+    """Middleware that enforces per-client request-rate limits using Redis."""
 
     def __init__(self, app, *args, **kwargs):
         """Initialise the middleware.
@@ -49,10 +42,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         """
         super().__init__(app)
         self.settings = get_settings()
-        # ``defaultdict(list)`` maps each client IP to a list of
-        # request timestamps.  Using ``defaultdict`` avoids the need
-        # to check for key existence before appending.
-        self._requests = defaultdict(list)
+        self.redis_client = RedisClient(self.settings)
 
     async def dispatch(self, request: Request, call_next):
         """Check the rate limit and either forward or reject the request.
@@ -68,18 +58,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         """
         now = time()
         # Use the client's IP address as the rate-limit key.
-        key = request.client.host if request.client else "unknown"
+        key = f"rate_limit:{request.client.host if request.client else 'unknown'}"
 
         # Select the appropriate limit: stricter for AI endpoints.
-        limit = self.settings.rate_limit_ai if "/ai/" in request.url.path else self.settings.rate_limit_default
+        path = request.url.path
+        limit = (
+            self.settings.rate_limit_ai
+            if "/ai/" in path or "/agents/general" in path
+            else self.settings.rate_limit_default
+        )
 
-        # Prune timestamps that fall outside the 60-second sliding window.
-        window = self._requests[key]
-        window[:] = [ts for ts in window if now - ts < 60]
+        # Prune timestamps that fall outside the 60-second sliding window
+        # and count remaining members in the window.
+        await self.redis_client.zremrangebyscore(key, 0, now - 60)
+        window_size = await self.redis_client.zcard(key)
 
         # If the client has already made ``limit`` requests in the
         # current window, reject the request with a 429.
-        if len(window) >= limit:
+        if window_size >= limit:
             logger.warning("Rate limit exceeded", extra={"ip": key, "path": request.url.path})
             response = JSONResponse(status_code=429, content={"detail": "Too Many Requests"})
             response.headers["X-RateLimit-Limit"] = str(limit)
@@ -87,13 +83,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             response.headers["Retry-After"] = "60"
             return response
 
-        # Record this request's timestamp and forward it.
-        window.append(now)
+        # Record this request's timestamp in the sorted set (score = timestamp).
+        await self.redis_client.zadd(key, {now: now})
+
         response = await call_next(request)
 
         # Attach rate-limit metadata to the response so clients can
         # monitor their usage.
         response.headers["X-RateLimit-Limit"] = str(limit)
-        response.headers["X-RateLimit-Remaining"] = str(max(limit - len(window), 0))
+        response.headers["X-RateLimit-Remaining"] = str(max(limit - window_size - 1, 0))
         response.headers["Retry-After"] = "60"
         return response

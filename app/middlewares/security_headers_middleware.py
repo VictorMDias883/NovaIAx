@@ -27,6 +27,15 @@ web vulnerabilities:
         Disables access to the Geolocation and Microphone APIs,
         reducing the attack surface.
 
+    - ``Cross-Origin-Opener-Policy: same-origin``
+        Isolation strategy against cross-origin embedding attacks.
+
+    - ``Cross-Origin-Resource-Policy: same-origin``
+        Restricts resources to same-origin requests only.
+
+    - ``Content-Security-Policy: default-src 'self'``
+        Reduces the risk of XSS and data injection attacks.
+
 This middleware is applied to all responses, including error responses.
 """
 
@@ -58,4 +67,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=()"
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
         return response

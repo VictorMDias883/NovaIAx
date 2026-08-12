@@ -1,26 +1,23 @@
 """
-Security utilities: JWT token creation/verification and password hashing.
+Security utilities: JWT token creation/verification, password hashing,
+and API-key authentication.
 
-This module provides two layers of security functionality:
+This module provides:
 
-1. **Module-level functions** (``create_access_token``, ``create_refresh_token``,
-   ``decode_token``) — stateless helpers that operate on the global
-   :class:`Settings` singleton.  These are used by the database-backed
-   :class:`AuthService` in :mod:`app.services.auth_service`.
+1. **JWT helpers** (``create_access_token``, ``create_refresh_token``,
+   ``decode_token``) — stateless module-level functions that operate on
+   the global :class:`Settings` singleton.  Used by the database-backed
+   auth service and the API-key service.
 
-2. **The :class:`AuthService` class** — a higher-level service that wraps
-   token creation/decoding and adds:
-   - An in-memory user store (seeded with a default admin account).
-   - Password hashing and verification via ``passlib``.
-   - API-key authentication backed by Redis (or an in-memory fallback).
+2. **``pwd_context``** — a shared ``passlib`` hashing context (PBKDF2
+   with SHA-256).  Kept here so every consumer (auth service, API-key
+   service) uses the same configuration.
 
-The module-level functions and the class methods duplicate some logic
-(token creation/decoding).  The class methods are preferred when a
-specific :class:`Settings` or :class:`RedisClient` instance is needed;
-the module-level functions are convenient for one-off use.
+3. **:class:`ApiKeyService`** — validates/hashes API keys against Redis
+   (with an in-memory fallback), including support for a master key that
+   bypasses validation.
 """
 
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -32,7 +29,7 @@ from app.core.config import Settings, get_settings
 
 
 # ---------------------------------------------------------------------------
-# Module-level JWT helpers
+# JWT helpers
 # ---------------------------------------------------------------------------
 
 def create_access_token(
@@ -85,9 +82,6 @@ def create_refresh_token(
     Structurally identical to :func:`create_access_token` but with
     ``type`` set to ``"refresh"`` and a TTL of ``refresh_token_ttl_days``
     days instead of minutes.
-
-    Refresh tokens are used to obtain new access tokens without requiring
-    the user to re-authenticate.
     """
     settings = settings or get_settings()
     now = datetime.now(tz=timezone.utc)
@@ -114,7 +108,6 @@ def decode_token(token: str, settings: Settings | None = None) -> dict[str, Any]
         The token payload as a dictionary.
     """
     settings = settings or get_settings()
-    
     return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
 
 
@@ -129,20 +122,15 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
 # ---------------------------------------------------------------------------
-# AuthService — higher-level security service
+# API-key service
 # ---------------------------------------------------------------------------
 
-class AuthService:
-    """Service layer for authentication and token management.
+class ApiKeyService:
+    """Validate and manage API keys backed by Redis.
 
-    Unlike the module-level functions, this class maintains an in-memory
-    user store and integrates with Redis for API-key validation.  It is
-    used by the API v1 auth endpoints (``app.api.v1.auth``) and the
-    dependency-injection layer (``app.api.deps``).
-
-    The in-memory user store is seeded with a single admin account whose
-    credentials come from :class:`Settings`.  In a production system this
-    would be replaced by a database-backed user repository.
+    API keys are never stored in plain text: only a PBKDF2 hash of the
+    key is kept, addressed by an 8-character prefix (allowing lookups
+    by prefix without leaking the key itself).
     """
 
     def __init__(self, settings: Settings | None = None, redis_client: RedisClient | None = None) -> None:
@@ -156,35 +144,6 @@ class AuthService:
         """
         self.settings = settings or get_settings()
         self.redis_client = redis_client or RedisClient(self.settings)
-        # In-memory user store.  In production this would be a database.
-        self._users: dict[str, dict[str, Any]] = {
-            self.settings.default_admin_username: {
-                "username": self.settings.default_admin_username,
-                "password_hash": pwd_context.hash(self.settings.default_admin_password),
-                "roles": ["admin"],
-            }
-        }
-
-    def verify_password(self, plain_password: str, password_hash: str) -> bool:
-        """Check a plaintext password against a stored hash.
-
-        Uses constant-time comparison internally to mitigate timing
-        attacks.
-        """
-        return pwd_context.verify(plain_password, password_hash)
-
-    def authenticate_user(self, username: str, password: str) -> dict[str, Any] | None:
-        """Authenticate a user by username and password.
-
-        Returns a dict with ``username`` and ``roles`` on success, or
-        ``None`` if the user does not exist or the password is wrong.
-        """
-        user = self._users.get(username)
-        if not user:
-            return None
-        if not self.verify_password(password, user["password_hash"]):
-            return None
-        return {"username": user["username"], "roles": user["roles"]}
 
     async def store_api_key_hash(self, api_key: str) -> None:
         """Store a hashed API key in Redis.
@@ -194,7 +153,8 @@ class AuthService:
         storage.  This allows lookups by prefix without storing the raw
         key.
         """
-        await (await self.redis_client.get_client()).set(f"api_key:{api_key[:8]}", pwd_context.hash(api_key))
+        client = await self.redis_client.get_client()
+        await client.set(f"api_key:{api_key[:8]}", pwd_context.hash(api_key))
 
     async def authenticate_api_key(self, api_key: str) -> bool:
         """Validate an API key.
@@ -211,43 +171,8 @@ class AuthService:
             return False
         if self.settings.master_api_key and api_key == self.settings.master_api_key:
             return True
-        stored_hash = await (await self.redis_client.get_client()).get(f"api_key:{api_key[:8]}")
+        client = await self.redis_client.get_client()
+        stored_hash = await client.get(f"api_key:{api_key[:8]}")
         if stored_hash and pwd_context.verify(api_key, stored_hash):
             return True
         return False
-
-    def create_access_token(self, subject: str) -> str:
-        """Create an access token using this service's settings.
-
-        This is an instance method wrapper around the module-level
-        :func:`create_access_token`, using ``self.settings``.
-        """
-        now = datetime.now(tz=timezone.utc)
-        payload = {
-            "sub": subject,
-            "type": "access",
-            "iat": int(now.timestamp()),
-            "exp": int((now + timedelta(minutes=self.settings.access_token_ttl_minutes)).timestamp()),
-        }
-        return jwt.encode(payload, self.settings.secret_key, algorithm=self.settings.jwt_algorithm)
-
-    def create_refresh_token(self, subject: str) -> str:
-        """Create a refresh token using this service's settings.
-
-        Instance-method counterpart to :func:`create_refresh_token`.
-        """
-        now = datetime.now(tz=timezone.utc)
-        payload = {
-            "sub": subject,
-            "type": "refresh",
-            "iat": int(now.timestamp()),
-            "exp": int((now + timedelta(days=self.settings.refresh_token_ttl_days)).timestamp()),
-        }
-        return jwt.encode(payload, self.settings.secret_key, algorithm=self.settings.jwt_algorithm)
-
-    def decode_token(self, token: str) -> dict[str, Any]:
-        """Decode and verify a JWT token using this service's settings.
-
-        Instance-method counterpart to :func:`decode_token`.
-        """
-        return jwt.decode(token, self.settings.secret_key, algorithms=[self.settings.jwt_algorithm])

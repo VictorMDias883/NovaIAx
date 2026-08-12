@@ -1,3 +1,10 @@
+"""Command object for deleting a user account."""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
 class DeleteUserCommand:
-    def __init__(self, target_id: int) -> None:
-        self.target_id = target_id
+    """Immutable command carrying the ID of the user to delete."""
+
+    target_id: int

@@ -1,85 +1,127 @@
 """
-API v1 authentication endpoints (in-memory auth flow).
+API v1 authentication endpoints (database-backed auth flow).
 
-This router provides a simple authentication flow that uses the
-in-memory :class:`AuthService` from :mod:`app.core.security`.  The
-service is seeded with a single admin account whose credentials come
-from the application settings.
+This router provides the full authentication flow backed by a real
+database.  Users are stored as records in the ``users`` table, and
+passwords are hashed with PBKDF2 before storage.
 
 Endpoints:
-    - POST /auth/login   — Authenticate with username/password, receive JWT tokens.
-    - POST /auth/refresh — Exchange a refresh token for a new access token.
-    - GET  /auth/me      — Return the current user's identity (from the JWT).
-
-Note: There is a parallel set of auth endpoints in
-:mod:`app.api.v1.auth_router` that use a database-backed flow.
+    - POST /auth/register — Create a new user account, receive JWT tokens.
+    - POST /auth/login    — Authenticate with email/password, receive JWT tokens.
+    - POST /auth/refresh  — Exchange a refresh token for a new token pair.
+    - GET  /auth/me       — Return the authenticated user's identity.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_auth_service
-from app.core.security import AuthService
-from app.schemas.auth import LoginRequest, RefreshRequest, TokenResponse, UserResponse
+from app.api.deps import get_current_user, get_session
+from app.commands.login_command import LoginCommand
+from app.commands.register_user_command import RegisterUserCommand
+from app.schemas.auth import (
+    AuthResponse,
+    LoginRequest,
+    RefreshRequest,
+    RegisterUserRequest,
+    TokenResponse,
+    UserResponse,
+)
+from app.services.auth_service import AuthService
 
-# Create a sub-router with the ``/auth`` prefix and ``auth`` tag.
-# The prefix is relative to the ``/api/v1`` mount point in ``main.py``.
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-@router.post("/refresh", response_model=TokenResponse)
-async def refresh(payload: RefreshRequest, auth_service: AuthService = Depends(get_auth_service)) -> TokenResponse:
-    """Exchange a refresh token for a new pair of JWT tokens.
 
-    The provided refresh token is decoded and verified.  If it is valid
-    and has ``type == "refresh"``, a new access token and refresh token
-    are issued.
+@router.post("/register", response_model=AuthResponse, status_code=201)
+async def register_user(
+    payload: RegisterUserRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AuthResponse:
+    """Register a new user account.
+
+    The request body is validated by the :class:`RegisterUserRequest`
+    Pydantic model (including password complexity rules).  The
+    :class:`AuthService` then:
+        1. Checks for duplicate emails (409 Conflict if found).
+        2. Hashes the password.
+        3. Creates the user record.
+        4. Issues JWT access and refresh tokens.
+
+    The first user to register becomes an administrator.
+
+    Args:
+        payload: Validated request body with ``full_name``, ``email``,
+            and ``password``.
+        session: Database session (injected via :func:`get_session`).
+
+    Returns:
+        An :class:`AuthResponse` with the user data and JWT tokens.
+    """
+    service = AuthService(session)
+    command = RegisterUserCommand(full_name=payload.full_name, email=str(payload.email), password=payload.password)
+    result = await service.register(command)
+    return AuthResponse(**result)
+
+
+@router.post("/login", response_model=AuthResponse)
+async def login(
+    payload: LoginRequest,
+    session: AsyncSession = Depends(get_session),
+) -> AuthResponse:
+    """Authenticate a user and return JWT tokens.
+
+    The :class:`AuthService` looks up the user by email, verifies the
+    password, and issues JWT tokens on success.
+
+    Args:
+        payload: Validated request body with ``email`` and ``password``.
+        session: Database session (injected via :func:`get_session`).
+
+    Returns:
+        An :class:`AuthResponse` with the user data and JWT tokens.
+
+    Raises:
+        HTTPException(401): If the email or password is invalid.
+    """
+    service = AuthService(session)
+    command = LoginCommand(email=str(payload.email), password=payload.password)
+    result = await service.login(command)
+    return AuthResponse(**result)
+
+
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_tokens(
+    payload: RefreshRequest,
+    session: AsyncSession = Depends(get_session),
+) -> TokenResponse:
+    """Exchange a refresh token for a new access/refresh pair.
 
     Args:
         payload: Request body containing the ``refresh_token``.
-        auth_service: The :class:`AuthService` dependency.
+        session: Database session (injected via :func:`get_session`).
 
     Returns:
-        A :class:`TokenResponse` with new tokens.
+        A :class:`TokenResponse` with the new token pair.
 
     Raises:
-        HTTPException(401): If the refresh token is invalid or has the
-            wrong type.
+        HTTPException(401): If the refresh token is invalid or expired.
     """
-    try:
-        decoded = auth_service.decode_token(payload.refresh_token)
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid refresh token") from exc
-    # Ensure the token is a *refresh* token, not an access token.
-    if decoded.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
-    return TokenResponse(
-        access_token=auth_service.create_access_token(decoded["sub"]),
-        refresh_token=auth_service.create_refresh_token(decoded["sub"]),
-    )
+    service = AuthService(session)
+    result = await service.refresh(payload.refresh_token)
+    return TokenResponse(**result)
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(request: Request, auth_service: AuthService = Depends(get_auth_service)) -> UserResponse:
-    """Return the current user's identity.
+async def me(current_user: dict = Depends(get_current_user)) -> UserResponse:
+    """Return the authenticated user's identity.
 
-    The JWT is extracted from the ``Authorization: Bearer <token>``
-    header, decoded, and the ``sub`` claim is returned as the username.
+    The identity comes from the validated JWT access token (via
+    :func:`get_current_user`).
 
     Args:
-        request: The incoming :class:`Request` (used to read headers).
-        auth_service: The :class:`AuthService` dependency.
+        current_user: The authenticated user's identity (injected).
 
     Returns:
-        A :class:`UserResponse` with the username and roles.
-
-    Raises:
-        HTTPException(401): If no valid Bearer token is provided.
+        A :class:`UserResponse` with the user's ``id``, ``full_name``,
+        ``email`` and ``role``.
     """
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    token = auth_header.split(" ", 1)[1]
-    try:
-        payload = auth_service.decode_token(token)
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid token") from exc
-    return UserResponse(username=payload["sub"], roles=[])
+    return UserResponse(**current_user)

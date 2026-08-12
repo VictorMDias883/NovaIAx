@@ -1,2 +1,41 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+
+# --- Environments ---
+.env
 .env.example
-*.pyc
+.venv/
+venv/
+env/
+
+# --- Pytest / coverage ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Ruff / mypy ---
+.ruff_cache/
+.mypy_cache/
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# --- Databases ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Logs ---
+*.log
