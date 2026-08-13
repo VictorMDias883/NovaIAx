@@ -14,6 +14,7 @@ administrator-managed system prompt).
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cache.conversation_cache import ConversationCache
 from app.clients.ai_client import AIClient
 from app.commands.general_agent_command import GeneralAgentCommand
 from app.models.roadmap_day import RoadmapDayStatus
@@ -27,16 +28,28 @@ OBJECTIVES_CONTEXT_LIMIT = 100
 class GeneralAgentService:
     """Coordinate the general-agent conversation with user data context."""
 
-    def __init__(self, session: AsyncSession, ai_client: AIClient) -> None:
+    #: Logical agent name used to namespace the conversation cache.
+    AGENT_KEY = "general_agent"
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        ai_client: AIClient,
+        conversation_cache: ConversationCache | None = None,
+    ) -> None:
         """Initialise the service with a database session and an AI client.
 
         Args:
             session: An open SQLAlchemy :class:`AsyncSession`.
             ai_client: The :class:`AIClient` implementation used to reach
                 the AI provider.
+            conversation_cache: The :class:`ConversationCache` used to keep
+                conversation history between turns.  If omitted, a new one
+                is created.
         """
         self.session = session
         self.ai_client = ai_client
+        self.conversation_cache = conversation_cache or ConversationCache()
         self.objective_repo = ObjectiveRepository(session)
         self.day_repo = RoadmapDayRepository(session)
 
@@ -47,8 +60,11 @@ class GeneralAgentService:
             1. Load the user's objectives and their roadmap days.
             2. Build a context block summarising objectives and which
                roadmap days were fulfilled.
-            3. Ask the AI provider to answer the user's message using
-               that context.
+            3. Load the previous conversation from the cache and ask the
+               AI provider to answer the user's message using that history
+               plus the fresh context block.
+            4. Store the new user/assistant pair so the next turn keeps
+               continuity and memory.
 
         Args:
             command: The user's message wrapped in a command object.
@@ -72,12 +88,23 @@ class GeneralAgentService:
             "diga educadamente que não possui essa informação. "
             "Não invente objetivos, prazos ou cumprimentos."
         )
-        user_message = f"{command.user_message}\n\n{context}"
 
-        assistant_message = await self.ai_client.create_chat_completion(
+        messages = await self.conversation_cache.get_messages(self.AGENT_KEY, user_id)
+        current_user_message = f"{command.user_message}\n\n{context}"
+        to_send = messages + [{"role": "user", "content": current_user_message}]
+
+        assistant_message = await self.ai_client.create_chat_completion_with_history(
             system_prompt=system_prompt,
-            user_message=user_message,
+            messages=to_send,
         )
+
+        # The user message is stored without the dynamic context block, which
+        # is rebuilt from the database on every turn.
+        to_store = messages + [
+            {"role": "user", "content": command.user_message},
+            {"role": "assistant", "content": assistant_message},
+        ]
+        await self.conversation_cache.save(self.AGENT_KEY, user_id, to_store)
         return {"assistant_message": assistant_message}
 
     async def _build_context(self, objectives: list) -> str:

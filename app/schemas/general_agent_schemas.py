@@ -13,3 +13,9 @@ class GeneralAgentResponse(BaseModel):
     """Response body returned by the general agent endpoint."""
 
     assistant_message: str
+
+
+class GeneralAgentConversationClearResponse(BaseModel):
+    """Response body returned when the conversation history is cleared."""
+
+    message: str

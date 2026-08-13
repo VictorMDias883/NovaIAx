@@ -74,9 +74,34 @@ class Settings(BaseSettings):
     cache_ttl_ai: int = 300              # Cache TTL for AI responses (longer).
 
     # --- CORS ----------------------------------------------------------------
-    allowed_origins: list[str] = Field(
-        default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"]
+    allowed_origins_raw: str | None = Field(
+        default=None,
+        alias="ALLOWED_ORIGINS",
     )
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        """Accept ``ALLOWED_ORIGINS`` in either CSV or JSON form."""
+        raw = self.allowed_origins_raw or os.getenv("ALLOWED_ORIGINS")
+        if raw is None:
+            return ["http://localhost:3000", "http://127.0.0.1:3000"]
+        if isinstance(raw, list):
+            return [str(item).strip() for item in raw if str(item).strip()]
+
+        value = str(raw).strip()
+        if not value:
+            return []
+
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return [item.strip() for item in value.split(",") if item.strip()]
+
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        if isinstance(parsed, str):
+            return [item.strip() for item in parsed.split(",") if item.strip()]
+        return [str(parsed).strip()]
 
     # --- API key authentication ----------------------------------------------
     api_key_header: str = "X-API-Key"
@@ -108,7 +133,7 @@ class Settings(BaseSettings):
 
     # --- Groq Cloud AI settings ---------------------------------------------
     groq_api_key: str | None = Field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
-    groq_api_base_url: str = Field(default_factory=lambda: os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/v1"))
+    groq_api_base_url: str = Field(default_factory=lambda: os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/openai/v1"))
     groq_api_model: str = Field(default_factory=lambda: os.getenv("GROQ_API_MODEL", "llama-3.3-70b-versatile"))
     groq_api_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("GROQ_API_TIMEOUT_SECONDS", "10")))
 

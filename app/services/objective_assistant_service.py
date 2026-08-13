@@ -13,8 +13,10 @@ import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cache.conversation_cache import ConversationCache
 from app.clients.ai_client import AIClient
 from app.commands.objective_assistant_command import ObjectiveAssistantCommand
 from app.commands.register_objective_command import RegisterObjectiveCommand
@@ -26,9 +28,19 @@ if TYPE_CHECKING:
 class ObjectiveAssistantService:
     """Coordinate the objective-assistant conversation and persistence flow."""
 
-    def __init__(self, session: AsyncSession, ai_client: AIClient, objective_service: "ObjectiveService | None" = None) -> None:
+    #: Logical agent name used to namespace the conversation cache.
+    AGENT_KEY = "objective_assistant"
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        ai_client: AIClient,
+        objective_service: "ObjectiveService | None" = None,
+        conversation_cache: ConversationCache | None = None,
+    ) -> None:
         self.session = session
         self.ai_client = ai_client
+        self.conversation_cache = conversation_cache or ConversationCache()
         self.objective_service = objective_service
         if self.objective_service is None:
             from app.services.objective_service import ObjectiveService
@@ -36,7 +48,14 @@ class ObjectiveAssistantService:
             self.objective_service = ObjectiveService(session, ai_client=self.ai_client)
 
     async def create_completion(self, command: ObjectiveAssistantCommand, user_id: int) -> dict[str, str]:
-        """Handle one turn of the objective assistant workflow."""
+        """Handle one turn of the objective assistant workflow.
+
+        The previous conversation is loaded from the cache and sent to the
+        AI together with the current message, preserving context.  When the
+        AI provides a complete objective payload that is actually
+        registered, the whole cached conversation is deleted so the next
+        conversation starts fresh.
+        """
         system_prompt = (
             "Você é um assistente especializado em ajudar o usuário a criar uma meta/objetivo. "
             "Converse naturalmente, faça perguntas uma por vez, colete as informações necessárias "
@@ -45,32 +64,45 @@ class ObjectiveAssistantService:
             "Enquanto não tiver todas as informações obrigatórias, responda em texto natural."
         )
 
-        assistant_message = await self.ai_client.create_chat_completion(
+        messages = await self.conversation_cache.get_messages(self.AGENT_KEY, user_id)
+        to_send = [*messages, {"role": "user", "content": command.user_message}]
+
+        assistant_message = await self.ai_client.create_chat_completion_with_history(
             system_prompt=system_prompt,
-            user_message=command.user_message,
+            messages=to_send,
         )
+        messages = [*to_send, {"role": "assistant", "content": assistant_message}]
 
         # If the AI response contains valid JSON matching the objective schema,
         # we treat it as a completed objective draft and persist it.
+        objective_created = False
         parsed = self._extract_json(assistant_message)
-        if parsed is None:
-            return {"assistant_message": assistant_message}
+        if parsed is not None and self._is_complete_payload(parsed):
+            try:
+                title = str(parsed["titulo"]).strip()
+                description = str(parsed["descricao"]).strip()
+                due_date = self._parse_due_date(parsed["prazo"])
+            except (KeyError, TypeError, ValueError):
+                title = description = ""
+            else:
+                if title and description:
+                    command_obj = RegisterObjectiveCommand(title=title, description=description, due_date=due_date)
+                    try:
+                        await self.objective_service.register(command_obj, user_id=user_id)
+                        objective_created = True
+                    except HTTPException:
+                        # Registration failed (e.g. past due date).  Keep the
+                        # conversation so the user can continue or retry.
+                        await self.conversation_cache.save(self.AGENT_KEY, user_id, messages)
+                        raise
 
-        if not self._is_complete_payload(parsed):
-            return {"assistant_message": assistant_message}
+        if objective_created:
+            # Once the objective is actually created, drop the whole cached
+            # conversation so a new objective starts a fresh chat.
+            await self.conversation_cache.clear(self.AGENT_KEY, user_id)
+        else:
+            await self.conversation_cache.save(self.AGENT_KEY, user_id, messages)
 
-        try:
-            title = str(parsed["titulo"]).strip()
-            description = str(parsed["descricao"]).strip()
-            due_date = self._parse_due_date(parsed["prazo"])
-        except (KeyError, TypeError, ValueError):
-            return {"assistant_message": assistant_message}
-
-        if not title or not description:
-            return {"assistant_message": assistant_message}
-
-        command_obj = RegisterObjectiveCommand(title=title, description=description, due_date=due_date)
-        await self.objective_service.register(command_obj, user_id=user_id)
         return {"assistant_message": assistant_message}
 
     def _extract_json(self, text: str) -> Any:

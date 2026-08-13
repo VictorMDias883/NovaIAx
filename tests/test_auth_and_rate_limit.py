@@ -73,3 +73,21 @@ def test_rate_limit_returns_429(client: TestClient) -> None:
         if response.status_code == 429:
             break
     assert response.status_code == 429
+
+
+def test_allowed_origins_supports_csv_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ALLOWED_ORIGINS may be provided as a CSV string in the .env file.
+
+    This matches the common Docker / environment-file format, where a list of
+    origins is represented as ``http://localhost:3000,http://127.0.0.1:3000``
+    instead of JSON.
+    """
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+
+    from app.core.config import Settings
+
+    settings = Settings()
+    assert settings.allowed_origins == [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]

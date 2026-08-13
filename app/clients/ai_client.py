@@ -53,6 +53,22 @@ class AIClient(ABC):
         """Create a chat completion from the given system prompt and user message."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def create_chat_completion_with_history(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, str]],
+    ) -> str:
+        """Create a chat completion including prior conversation history.
+
+        Args:
+            system_prompt: The system instructions for the assistant.
+            messages: A list of prior ``{"role": ..., "content": ...}``
+                messages (``user``/``assistant``) ending with the current
+                user message.
+        """
+        raise NotImplementedError
+
 
 # ---------------------------------------------------------------------------
 # Groq Cloud AI client implementation
@@ -74,18 +90,49 @@ class GroqAIClient(AIClient):
 
     async def create_chat_completion(self, system_prompt: str, user_message: str) -> str:
         """Send a chat completion request to Groq Cloud and return the assistant reply."""
-        client = _get_httpx_client()
-        url = f"{self.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
         payload = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
             ],
+        }
+        return await self._request(payload)
+
+    async def create_chat_completion_with_history(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, str]],
+    ) -> str:
+        """Send a chat completion request with prior history to Groq Cloud.
+
+        The system prompt is prepended to the supplied message history, so
+        the model can keep the conversation context across turns.
+        """
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "system", "content": system_prompt}, *messages],
+        }
+        return await self._request(payload)
+
+    async def _request(self, payload: dict[str, Any]) -> str:
+        """Post a payload to Groq Cloud and return the assistant reply.
+
+        Args:
+            payload: The full request body (``model`` + ``messages``).
+
+        Returns:
+            The assistant's reply text.
+
+        Raises:
+            HTTPException(502/504): If the AI provider is unreachable,
+                fails authentication, or returns an invalid response.
+        """
+        client = _get_httpx_client()
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
         }
 
         try:

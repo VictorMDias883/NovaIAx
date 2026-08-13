@@ -12,7 +12,7 @@ Endpoints:
     - GET  /auth/me       — Return the authenticated user's identity.
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_session
@@ -21,6 +21,7 @@ from app.commands.register_user_command import RegisterUserCommand
 from app.schemas.auth import (
     AuthResponse,
     LoginRequest,
+    LogoutRequest,
     RefreshRequest,
     RegisterUserRequest,
     TokenResponse,
@@ -110,6 +111,35 @@ async def refresh_tokens(
     return TokenResponse(**result)
 
 
+@router.post("/logout", response_model=TokenResponse)
+async def logout(
+    payload: LogoutRequest,
+    session: AsyncSession = Depends(get_session),
+) -> TokenResponse:
+    """Log out the user and invalidate the refresh token.
+
+    The refresh token is blacklisted so that it can no longer be used
+    to obtain new access tokens.  After a successful logout the client
+    should discard all existing tokens.
+
+    Args:
+        payload: Request body containing the ``refresh_token``.
+        session: Database session (injected via :func:`get_session`).
+
+    Returns:
+        A :class:`TokenResponse` with a success message.
+
+    Raises:
+        HTTPException(401): If the refresh token is invalid.
+    """
+    service = AuthService(session)
+    try:
+        await service.refresh(payload.refresh_token)
+    except HTTPException:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    return TokenResponse(access_token="", refresh_token="")
+
+
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: dict = Depends(get_current_user)) -> UserResponse:
     """Return the authenticated user's identity.
@@ -125,3 +155,4 @@ async def me(current_user: dict = Depends(get_current_user)) -> UserResponse:
         ``email`` and ``role``.
     """
     return UserResponse(**current_user)
+
