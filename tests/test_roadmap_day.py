@@ -94,6 +94,32 @@ def test_create_days_single_day_window() -> None:
     asyncio.run(_run(scenario))
 
 
+def test_create_days_stores_per_day_contents() -> None:
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        objective = await _create_objective(session, user.id)
+        service = RoadmapDayService(session)
+
+        days = await service.create_days(
+            objective.id,
+            datetime.now(UTC),
+            datetime.now(UTC) + timedelta(days=2),
+            contents={
+                1: "Aprender saudações básicas",
+                2: "Praticar vocabulário de rotina",
+                3: "Assistir um vídeo em inglês",
+            },
+        )
+
+        assert [day.content for day in days] == [
+            "Aprender saudações básicas",
+            "Praticar vocabulário de rotina",
+            "Assistir um vídeo em inglês",
+        ]
+
+    asyncio.run(_run(scenario))
+
+
 def test_set_day_status_marks_completed() -> None:
     async def scenario(session) -> None:
         user = await _create_user(session)

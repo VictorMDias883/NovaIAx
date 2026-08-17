@@ -29,6 +29,7 @@ class RoadmapDayRepository:
         day_number: int,
         day_date,
         status: RoadmapDayStatus = RoadmapDayStatus.PENDING,
+        content: str | None = None,
     ) -> RoadmapDay:
         """Create and persist a single roadmap day.
 
@@ -37,6 +38,7 @@ class RoadmapDayRepository:
             day_number: Position of the day inside its window (1..N).
             day_date: Calendar date the day refers to.
             status: Initial status of the day.
+            content: Optional basic meta / minimum objective for the day.
 
         Returns:
             The newly created :class:`RoadmapDay` instance.
@@ -46,6 +48,7 @@ class RoadmapDayRepository:
             day_number=day_number,
             day_date=day_date,
             status=status,
+            content=content,
         )
         self.session.add(day)
         await self.session.commit()

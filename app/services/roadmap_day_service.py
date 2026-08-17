@@ -37,17 +37,20 @@ class RoadmapDayService:
         objective_id: int,
         period_start: datetime,
         period_end: datetime,
+        contents: dict[int, str] | None = None,
     ) -> list[RoadmapDay]:
         """Create one roadmap day per calendar date in the given window.
 
         The window is inclusive on both ends: if ``period_start`` and
         ``period_end`` fall on the same calendar date, a single day is
-        created.
+        created.  When ``contents`` is provided it maps each ``day_number``
+        to the day's basic meta / minimum objective.
 
         Args:
             objective_id: ID of the owning objective.
             period_start: Start of the window (timezone-aware).
             period_end: End of the window (timezone-aware).
+            contents: Optional mapping of ``day_number`` → day meta.
 
         Returns:
             The list of created :class:`RoadmapDay` instances.
@@ -61,19 +64,55 @@ class RoadmapDayService:
         end_date = end.date()
         total = (end_date - start_date).days + 1
 
-        days: list[RoadmapDay] = []
+        # Load existing days for the objective and index them by calendar date
+        # so we can return existing records for the requested window instead
+        # of silently skipping them. This ensures renewals return the proper
+        # list of days even when they were created previously.
+        existing = await self.day_repo.list_by_objective(objective_id)
+        existing_map: dict = {d.day_date.date(): d for d in existing}
+
+        # Prepare lists: `to_create` holds new RoadmapDay instances to persist,
+        # `result_days` will accumulate either existing or newly created days
+        # in window order.
+        to_create: list[RoadmapDay] = []
+        result_days: list[RoadmapDay] = []
+
         for day_number in range(1, total + 1):
             day_date = datetime.combine(start_date + timedelta(days=day_number - 1), time.min, tzinfo=UTC)
-            days.append(
-                RoadmapDay(
-                    objective_id=objective_id,
-                    day_number=day_number,
-                    day_date=day_date,
-                    status=RoadmapDayStatus.PENDING,
+            content = contents.get(day_number) if contents else None
+            if day_date.date() in existing_map:
+                # Use the existing persisted day for this calendar date.
+                result_days.append(existing_map[day_date.date()])
+            else:
+                # Create an unsaved RoadmapDay instance to be persisted.
+                to_create.append(
+                    RoadmapDay(
+                        objective_id=objective_id,
+                        day_number=day_number,
+                        day_date=day_date,
+                        status=RoadmapDayStatus.PENDING,
+                        content=content,
+                    )
                 )
-            )
 
-        return await self.day_repo.create_many(days)
+        # Persist any newly created days and refresh them to obtain IDs.
+        created: list[RoadmapDay] = []
+        if to_create:
+            created = await self.day_repo.create_many(to_create)
+
+        # Merge existing and created days preserving window order.
+        # Build a mapping for created days by date for quick lookup.
+        created_map = {d.day_date.date(): d for d in created}
+
+        merged: list[RoadmapDay] = []
+        for day_number in range(1, total + 1):
+            d_date = (start_date + timedelta(days=day_number - 1))
+            if d_date in existing_map:
+                merged.append(existing_map[d_date])
+            elif d_date in created_map:
+                merged.append(created_map[d_date])
+
+        return merged
 
     async def list_days(self, objective_id: int, user_id: int, role: str) -> list[RoadmapDay]:
         """Return an objective's roadmap days (owner or admin only).

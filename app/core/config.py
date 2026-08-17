@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     # --- Groq Cloud AI settings ---------------------------------------------
     groq_api_key: str | None = Field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
     groq_api_base_url: str = Field(default_factory=lambda: os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/openai/v1"))
-    groq_api_model: str = Field(default_factory=lambda: os.getenv("GROQ_API_MODEL", "llama-3.3-70b-versatile"))
+    groq_api_model: str = Field(default_factory=lambda: os.getenv("GROQ_API_MODEL", "openai/gpt-oss-120b"))
     groq_api_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("GROQ_API_TIMEOUT_SECONDS", "10")))
 
     # Pydantic-settings configuration: read from ``.env`` file, case-insensitive.

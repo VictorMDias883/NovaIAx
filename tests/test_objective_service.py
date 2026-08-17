@@ -76,6 +76,36 @@ def test_register_generates_and_stores_roadmap() -> None:
     asyncio.run(_run(scenario))
 
 
+def test_register_decomposes_objective_into_daily_metas() -> None:
+    payload = (
+        '{"days": ['
+        '{"day": 1, "meta": "Aprender saudações e o alfabeto"},'
+        '{"day": 2, "meta": "Estudar vocabulário básico de rotina"},'
+        '{"day": 3, "meta": "Praticar escuta com vídeos curtos"}'
+        "]}"
+    )
+
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        service = ObjectiveService(session, ai_client=DummyAIClient(payload))
+
+        result = await _register_objective(session, service, user.id)
+
+        assert result["roadmap"] == (
+            "## Roadmap\n"
+            "- Dia 1: Aprender saudações e o alfabeto\n"
+            "- Dia 2: Estudar vocabulário básico de rotina\n"
+            "- Dia 3: Praticar escuta com vídeos curtos"
+        )
+        assert len(result["days"]) == 7
+        assert result["days"][0]["day_number"] == 1
+        assert result["days"][0]["content"] == "Aprender saudações e o alfabeto"
+        assert result["days"][2]["content"] == "Praticar escuta com vídeos curtos"
+        assert result["days"][6]["content"] is None
+
+    asyncio.run(_run(scenario))
+
+
 def test_register_rejects_past_due_date() -> None:
     async def scenario(session) -> None:
         user = await _create_user(session)
@@ -108,6 +138,29 @@ def test_renew_roadmap_updates_after_7_days() -> None:
 
         assert renewed["roadmap"] == "## Semana 2\n- Avançar"
         assert renewed["id"] == result["id"]
+
+    asyncio.run(_run(scenario))
+
+
+def test_renew_roadmap_regenerates_daily_metas() -> None:
+    payload = '{"days": [{"day": 1, "meta": "Revisar o vocabulário da semana 1"}, {"day": 2, "meta": "Treinar conversação"}]}'
+
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        service = ObjectiveService(session, ai_client=DummyAIClient(payload))
+        result = await _register_objective(session, service, user.id)
+        await _backdate_roadmap(session, result["id"], days=8)
+
+        renewed = await service.renew_roadmap(
+            objective_id=result["id"],
+            user_id=user.id,
+            role="USER",
+        )
+
+        assert renewed["roadmap"].startswith("## Roadmap")
+        assert renewed["days"][0]["content"] == "Revisar o vocabulário da semana 1"
+        assert renewed["days"][1]["content"] == "Treinar conversação"
+        assert renewed["days"][0]["day_number"] == 1
 
     asyncio.run(_run(scenario))
 

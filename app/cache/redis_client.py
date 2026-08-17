@@ -23,6 +23,8 @@ try:
 except ImportError:  # pragma: no cover - fallback for environments without redis package
     redis_async = None
 
+import asyncio
+
 from app.core.config import Settings, get_settings
 
 
@@ -110,10 +112,17 @@ class RedisClient:
                 self._client = self._memory_store
             else:
                 try:
+                    # Create the redis client and perform a short ping to ensure
+                    # the server is reachable. Use a small timeout so tests do
+                    # not hang if Redis is not available or unresponsive.
                     self._client = redis_async.from_url(self.settings.redis_url, decode_responses=True)
-                    await self._client.ping()
+                    try:
+                        await asyncio.wait_for(self._client.ping(), timeout=0.5)
+                    except Exception:
+                        # Ping failed or timed out — fall back to in-memory store.
+                        self._client = self._memory_store
                 except Exception:
-                    # Redis is unreachable — fall back to in-memory store.
+                    # Any error creating the client falls back to in-memory.
                     self._client = self._memory_store
         return self._client
 

@@ -15,8 +15,8 @@ API Gateway construído com **FastAPI** que centraliza autenticação, autoriza�
   - `POST /ai/chat` — chat completion usando system prompts gerenciáveis.
   - `POST /objectives/assistant` — assistente conversacional que coleta os dados e registra a meta automaticamente quando recebe um JSON completo.
   - `POST /agents/general/chat` — **agente geral**: assistente conversacional com acesso aos objetivos do usuário e aos dias do roadmap cumpridos.
-- **Objetivos** — registro de metas com validação de data futura e **roadmap gerado por IA** em janelas de 7 dias: ao criar, o roadmap cobre os próximos 7 dias; a cada 7 dias o dono (ou admin) chama o endpoint de renovação para gerar a próxima janela, até a data limite.
-- **Dias do roadmap** — cada janela de roadmap gera automaticamente os dias (1 a 7); o dono (ou admin) marca cada dia como cumprido/pendente/pulado via API, e o agente geral usa esses dados para reportar o progresso.
+- **Objetivos** — registro de **metas gerais** (ex.: "aprender inglês") com validação de data futura e **roadmap gerado por IA** contido dentro do objetivo, em janelas de 7 dias: ao criar, o roadmap cobre os próximos 7 dias e decompõe a meta geral em uma **meta básica / objetivo mínimo por dia**; a cada 7 dias o dono (ou admin) chama o endpoint de renovação para gerar a próxima janela, até a data limite.
+- **Dias do roadmap** — cada janela de roadmap gera automaticamente os dias (1 a 7), cada um com sua **meta básica** (ex.: "Dia 1 — aprender vocabulário básico de saudações"); o dono (ou admin) marca cada dia como cumprido/pendente/pulado via API, e o agente geral usa esses dados para reportar o progresso.
 - **System prompts** — CRUD exclusivo para administradores.
 
 ## Stack
@@ -186,10 +186,10 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 
 ### Dias do roadmap
 
-Ao criar ou renovar o roadmap de uma meta, o sistema registra automaticamente um dia por data da janela (1 a 7). O dono (ou admin) marca o progresso:
+Ao criar ou renovar o roadmap de uma meta (o objetivo geral), o sistema registra automaticamente um dia por data da janela (1 a 7), cada um com sua **meta básica / objetivo mínimo** (ex.: "Dia 1 — aprender vocabulário básico de saudações"). O dono (ou admin) marca o progresso:
 
 ```bash
-# Listar os dias do roadmap de uma meta
+# Listar os dias do roadmap de uma meta (cada dia traz a meta básica)
 curl http://localhost:8000/api/v1/objectives/1/roadmap/days \
   -H "Authorization: Bearer <access_token>"
 
@@ -199,6 +199,8 @@ curl -X PATCH http://localhost:8000/api/v1/objectives/1/roadmap/days/<day_id> \
   -H "Content-Type: application/json" \
   -d '{"status":"COMPLETED"}'
 ```
+
+A resposta de `POST /objectives/register` e `POST /objectives/{id}/roadmap/renew` inclui o campo `days`, com a meta básica de cada dia dentro do objetivo.
 
 ### Agente geral
 

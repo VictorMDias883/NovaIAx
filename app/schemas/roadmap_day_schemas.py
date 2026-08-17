@@ -14,6 +14,7 @@ class RoadmapDayResponse(BaseModel):
     objective_id: int
     day_number: int
     day_date: datetime
+    content: str | None = None
     status: RoadmapDayStatus
     completed_at: datetime | None
 

@@ -141,7 +141,10 @@ class GeneralAgentService:
                 )
                 for day in days:
                     date_label = day.day_date.date().isoformat()
-                    lines.append(f"     - Dia {day.day_number} ({date_label}): {day.status.value}")
+                    content = f" — {day.content}" if day.content else ""
+                    lines.append(
+                        f"     - Dia {day.day_number} ({date_label}): {day.status.value}{content}"
+                    )
             else:
                 lines.append("   Dias do roadmap: nenhum registrado ainda.")
 

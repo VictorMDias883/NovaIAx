@@ -79,9 +79,15 @@ class ObjectiveAssistantService:
         parsed = self._extract_json(assistant_message)
         if parsed is not None and self._is_complete_payload(parsed):
             try:
-                title = str(parsed["titulo"]).strip()
-                description = str(parsed["descricao"]).strip()
-                due_date = self._parse_due_date(parsed["prazo"])
+                # Support both Portuguese and English key names
+                if "titulo" in parsed:
+                    title = str(parsed["titulo"]).strip()
+                    description = str(parsed["descricao"]).strip()
+                    due_date = self._parse_due_date(parsed["prazo"])
+                else:
+                    title = str(parsed["title"]).strip()
+                    description = str(parsed["description"]).strip()
+                    due_date = self._parse_due_date(parsed["due_date"])
             except (KeyError, TypeError, ValueError):
                 title = description = ""
             else:
@@ -142,9 +148,19 @@ class ObjectiveAssistantService:
         """Validate the AI payload structure before it is treated as a completion."""
         if not isinstance(payload, dict):
             return False
-        if not {"titulo", "descricao", "prazo"}.issubset(payload.keys()):
+        # Accept either Portuguese keys or English equivalents.
+        required_sets = [
+            {"titulo", "descricao", "prazo"},
+            {"title", "description", "due_date"},
+        ]
+        if not any(req.issubset(payload.keys()) for req in required_sets):
             return False
-        return all(isinstance(payload[key], str) and bool(str(payload[key]).strip()) for key in ("titulo", "descricao", "prazo"))
+        # pick keys that exist and ensure they're non-empty strings
+        if "titulo" in payload:
+            keys = ("titulo", "descricao", "prazo")
+        else:
+            keys = ("title", "description", "due_date")
+        return all(isinstance(payload[key], str) and bool(str(payload[key]).strip()) for key in keys)
 
     def _parse_due_date(self, value: str) -> datetime:
         """Parse the AI-supplied due date into a timezone-aware datetime."""

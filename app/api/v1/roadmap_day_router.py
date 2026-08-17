@@ -65,4 +65,5 @@ async def update_roadmap_day_status(
         day_date=day.day_date,
         status=day.status,
         completed_at=day.completed_at,
+        content=day.content,
     )

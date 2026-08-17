@@ -2,20 +2,30 @@
 Service layer for objective management.
 
 This :class:`ObjectiveService` handles the business logic for creating
-and managing objectives (tasks/goals).  It sits between the API router
-and the repository layer:
+and managing objectives (goals).  It sits between the API router and
+the repository layer:
 
     Router → Command → Service → Repository → Database
 
+An :class:`Objective` is the *general* goal of the user (e.g. "learning
+English").  The roadmap lives *inside* the objective and decomposes it
+into one basic meta / minimum objective per day (e.g. "day 1 — learn
+basic vocabulary").  Those per-day metas are persisted on the
+:class:`RoadmapDay` records.
+
 Responsibilities:
     - Validate that the objective's ``due_date`` is not in the past.
-    - Generate a 7-day roadmap for the objective using the AI provider.
+    - Generate a 7-day roadmap for the objective using the AI provider,
+      producing one basic meta per roadmap day.
     - Renew the roadmap every 7 days until the objective's due date.
     - Delegate persistence to :class:`ObjectiveRepository`.
     - Return plain dictionary representations of objectives.
 """
 
+import json
+import re
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +34,9 @@ from app.clients.ai_client import AIClient, GroqAIClient
 from app.commands.register_objective_command import RegisterObjectiveCommand
 from app.repositories.objective_repository import ObjectiveRepository
 from app.services.roadmap_day_service import RoadmapDayService
+
+if TYPE_CHECKING:
+    from app.models.roadmap_day import RoadmapDay
 
 
 class ObjectiveService:
@@ -85,7 +98,7 @@ class ObjectiveService:
         now = datetime.now(UTC)
         period_start = now
         period_end = min(period_start + timedelta(days=self.ROADMAP_WINDOW_DAYS), command.due_date)
-        roadmap = await self._generate_roadmap(
+        roadmap, day_contents = await self._generate_roadmap(
             command,
             period_start=period_start,
             period_end=period_end,
@@ -101,8 +114,8 @@ class ObjectiveService:
             roadmap=roadmap,
             roadmap_updated_at=now,
         )
-        await self._create_roadmap_days(objective.id, period_start, period_end)
-        return self._to_dict(objective)
+        days = await self._create_roadmap_days(objective.id, period_start, period_end, day_contents)
+        return self._to_dict(objective, days)
 
     async def renew_roadmap(self, objective_id: int, user_id: int, role: str) -> dict[str, object]:
         """Renew an objective's roadmap for the next 7-day window.
@@ -159,11 +172,33 @@ class ObjectiveService:
             description=objective.description,
             due_date=objective.due_date,
         )
-        roadmap = await self._generate_roadmap(
+        # Provide the AI with a short summary of the previous window's
+        # per-day completion status so it can propose the next window
+        # taking into account what the user completed or missed.
+        from app.repositories.roadmap_day_repository import RoadmapDayRepository
+
+        day_repo = RoadmapDayRepository(self.session)
+        previous_days = await day_repo.list_by_objective(objective.id)
+        prev_summary_lines: list[str] = []
+        if previous_days:
+            completed = sum(1 for d in previous_days if d.status == d.status.COMPLETED)
+            skipped = sum(1 for d in previous_days if d.status == d.status.SKIPPED)
+            pending = sum(1 for d in previous_days if d.status == d.status.PENDING)
+            prev_summary_lines.append(
+                f"Resumo dos dias anteriores: {len(previous_days)} dia(s) — {completed} cumprido(s), {skipped} pulado(s), {pending} pendente(s)."
+            )
+            for d in previous_days:
+                prev_summary_lines.append(
+                    f"Dia {d.day_number}: {d.status.value} — {d.content or 'sem conteúdo'} ({d.day_date.date().isoformat()})"
+                )
+        previous_days_summary = "\n".join(prev_summary_lines) if prev_summary_lines else None
+
+        roadmap, day_contents = await self._generate_roadmap(
             command,
             period_start=period_start,
             period_end=period_end,
             previous_roadmap=objective.roadmap,
+            previous_days_summary=previous_days_summary,
         )
 
         updated = await repo.update(
@@ -171,11 +206,16 @@ class ObjectiveService:
             roadmap=roadmap,
             roadmap_updated_at=now,
         )
-        await self._create_roadmap_days(updated.id, period_start, period_end)
-        return self._to_dict(updated)
+        days = await self._create_roadmap_days(updated.id, period_start, period_end, day_contents)
+        return self._to_dict(updated, days)
 
-    def _to_dict(self, objective) -> dict[str, object]:
-        """Convert an :class:`Objective` instance into a plain dictionary."""
+    def _to_dict(self, objective, days: list["RoadmapDay"] | None = None) -> dict[str, object]:
+        """Convert an :class:`Objective` instance into a plain dictionary.
+
+        The ``days`` list carries the roadmap days (each with its basic
+        meta / minimum objective) so the roadmap stays inside the
+        objective in the API response.
+        """
         return {
             "id": objective.id,
             "title": objective.title,
@@ -184,6 +224,18 @@ class ObjectiveService:
             "roadmap_updated_at": objective.roadmap_updated_at,
             "due_date": objective.due_date,
             "user_id": objective.user_id,
+            "days": [
+                {
+                    "id": day.id,
+                    "objective_id": day.objective_id,
+                    "day_number": day.day_number,
+                    "day_date": day.day_date,
+                    "content": day.content,
+                    "status": day.status,
+                    "completed_at": day.completed_at,
+                }
+                for day in (days or [])
+            ],
         }
 
     @staticmethod
@@ -203,20 +255,36 @@ class ObjectiveService:
         objective_id: int,
         period_start: datetime,
         period_end: datetime,
-    ) -> None:
+        day_contents: dict[int, str] | None = None,
+    ) -> list["RoadmapDay"]:
         """Create one roadmap-day record per calendar day of the window.
 
         A roadmap window covers exactly :attr:`ROADMAP_WINDOW_DAYS`
         calendar days, so the day records span from ``period_start`` up
         to ``period_start + ROADMAP_WINDOW_DAYS - 1`` (capped by the
         objective's due date).  Delegates to :class:`RoadmapDayService`
-        so that the tracking records stay in sync with the roadmap.
+        so that the tracking records stay in sync with the roadmap and
+        carry the per-day basic metas.
+
+        Args:
+            objective_id: ID of the owning objective.
+            period_start: Start of the window (timezone-aware).
+            period_end: End of the window (timezone-aware).
+            day_contents: Optional mapping of ``day_number`` → meta.
+
+        Returns:
+            The list of created :class:`RoadmapDay` instances.
         """
         window_end = min(
             period_start + timedelta(days=self.ROADMAP_WINDOW_DAYS - 1),
             period_end,
         )
-        await RoadmapDayService(self.session).create_days(objective_id, period_start, window_end)
+        return await RoadmapDayService(self.session).create_days(
+            objective_id,
+            period_start,
+            window_end,
+            contents=day_contents,
+        )
 
     async def _generate_roadmap(
         self,
@@ -225,12 +293,15 @@ class ObjectiveService:
         period_start: datetime,
         period_end: datetime,
         previous_roadmap: str | None,
-    ) -> str:
+        previous_days_summary: str | None = None,
+    ) -> tuple[str, dict[int, str] | None]:
         """Generate a roadmap for a 7-day window via the AI provider.
 
-        Builds a system prompt instructing the model to produce an
-        actionable markdown roadmap for the given period, using the
-        previous roadmap as context so the plan stays continuous.
+        The general objective is decomposed into one basic meta / minimum
+        objective per roadmap day.  The AI is asked to return a JSON
+        payload (``{"days": [{"day": 1, "meta": "..."}, ...]}``) which is
+        parsed into a markdown roadmap plus a ``day_number`` → meta
+        mapping used to fill the :class:`RoadmapDay` records.
 
         Args:
             command: The objective's registration data.
@@ -240,7 +311,9 @@ class ObjectiveService:
                 first window.
 
         Returns:
-            The AI-generated roadmap as a string.
+            A ``(roadmap_markdown, day_contents)`` tuple.  ``day_contents``
+            is ``None`` when the AI response could not be parsed as the
+            expected JSON structure (the raw text is then kept as roadmap).
 
         Raises:
             HTTPException(502): If the AI provider is unavailable or
@@ -249,23 +322,75 @@ class ObjectiveService:
         client = self.ai_client or GroqAIClient()
         system_prompt = (
             "Você é um especialista em planejamento estratégico de metas. "
+            "O objetivo do usuário é a meta geral (ex.: 'aprender inglês'), "
+            "e o roadmap está contido dentro dele, decomposto em dias. "
             "As metas são executadas em janelas de 7 dias: o roadmap sempre "
             "cobre apenas o próximo período de 7 dias e é renovado quando "
             "essa janela termina. "
-            "Com base na meta fornecida, crie um roadmap detalhado e acionável "
-            "em markdown exclusivamente para o período informado, com etapas e "
-            "marcos dentro desse intervalo. Use o roadmap anterior como contexto "
-            "para dar continuidade ao plano. "
-            "Organize com títulos (##) e listas. Responda apenas com o roadmap."
+            "Para cada dia da janela, defina uma meta básica / objetivo mínimo "
+            "e acionável (ex.: 'Dia 1: aprender vocabulário básico de saudações'). "
+            "Responda EXCLUSIVAMENTE em JSON, sem markdown, no formato: "
+            '{"days": [{"day": 1, "meta": "..."}, {"day": 2, "meta": "..."}]} '
+            "com um item para cada dia do período informado. Use o roadmap "
+            "anterior como contexto para dar continuidade ao plano."
         )
         user_message = (
-            f"Título: {command.title}\n"
+            f"Objetivo geral: {command.title}\n"
             f"Descrição: {command.description or 'Não informada'}\n"
             f"Prazo final: {command.due_date.date().isoformat()}\n"
             f"Período do roadmap: {period_start.date().isoformat()} a {period_end.date().isoformat()}\n"
-            f"Roadmap anterior (contexto):\n{previous_roadmap or 'Nenhum'}"
+            f"Roadmap anterior (contexto):\n{previous_roadmap or 'Nenhum'}\n"
         )
-        return await client.create_chat_completion(
+        if previous_days_summary:
+            user_message += f"\nContexto de cumprimento anterior:\n{previous_days_summary}\n"
+        raw = await client.create_chat_completion(
             system_prompt=system_prompt,
             user_message=user_message,
         )
+
+        parsed = self._extract_json(raw)
+        day_contents: dict[int, str] | None = None
+        if isinstance(parsed, dict) and isinstance(parsed.get("days"), list):
+            metas: dict[int, str] = {}
+            day_lines: list[str] = []
+            for item in parsed["days"]:
+                if not isinstance(item, dict) or "day" not in item:
+                    continue
+                meta = str(item.get("meta") or "").strip()
+                if meta:
+                    metas[int(item["day"])] = meta
+                    day_lines.append(f"- Dia {item['day']}: {meta}")
+            if day_lines:
+                day_contents = metas
+                return "## Roadmap\n" + "\n".join(day_lines), day_contents
+
+        return raw, None
+
+    @staticmethod
+    def _extract_json(text: str) -> Any:
+        """Attempt to parse JSON from an AI response.
+
+        Tolerates markdown code fences (`` ```json ... ``` ``) and
+        surrounding natural-language text.  Returns the parsed value on
+        success, or ``None`` if no valid JSON could be extracted.
+        """
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        fence_match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+        if fence_match:
+            try:
+                return json.loads(fence_match.group(1).strip())
+            except json.JSONDecodeError:
+                pass
+
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+
+        return None
