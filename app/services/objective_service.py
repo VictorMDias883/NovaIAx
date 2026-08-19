@@ -92,7 +92,7 @@ class ObjectiveService:
             HTTPException(502): If the AI provider fails to generate
                 the roadmap.
         """
-        if command.due_date < datetime.now(UTC):
+        if self._ensure_aware(command.due_date) < datetime.now(UTC):
             raise HTTPException(status_code=400, detail="due_date cannot be in the past")
 
         now = datetime.now(UTC)
