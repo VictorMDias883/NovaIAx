@@ -118,6 +118,30 @@ class ObjectiveService:
         days = await self._create_roadmap_days(objective.id, period_start, period_end, day_contents)
         return self._to_dict(objective, days)
 
+    async def list_by_user(self, user_id: int, offset: int = 0, limit: int = 50) -> list[dict[str, object]]:
+        """Return all objectives belonging to a user, with their roadmap days.
+
+        Args:
+            user_id: ID of the user whose objectives are listed.
+            offset: Number of records to skip (pagination).
+            limit: Maximum number of objectives to return.
+
+        Returns:
+            A list of dictionaries, each representing an objective with
+            its roadmap days.
+        """
+        repo = ObjectiveRepository(self.session)
+        objectives = await repo.list_by_user(user_id, offset=offset, limit=limit)
+
+        from app.repositories.roadmap_day_repository import RoadmapDayRepository
+
+        day_repo = RoadmapDayRepository(self.session)
+        result: list[dict[str, object]] = []
+        for obj in objectives:
+            days = await day_repo.list_by_objective(obj.id)
+            result.append(self._to_dict(obj, days))
+        return result
+
     async def renew_roadmap(self, objective_id: int, user_id: int, role: str) -> dict[str, object]:
         """Renew an objective's roadmap for the next 7-day window.
 

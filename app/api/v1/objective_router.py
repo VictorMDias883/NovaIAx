@@ -16,7 +16,7 @@ Architecture:
     Router → Command → Service → Repository → Database
 """
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_session
@@ -27,6 +27,36 @@ from app.services.objective_service import ObjectiveService
 
 # Create a sub-router with the ``/objectives`` prefix and ``objectives`` tag.
 router = APIRouter(prefix="/objectives", tags=["objectives"])
+
+
+@router.get("/", response_model=list[ObjectiveResponse])
+async def list_objectives(
+    current_user: dict = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+) -> list[ObjectiveResponse]:
+    """List all objectives of the authenticated user.
+
+    Supports pagination via ``offset`` and ``limit`` query parameters.
+
+    Args:
+        current_user: The authenticated user's identity.
+        session: Database session.
+        offset: Number of records to skip.
+        limit: Maximum number of objectives to return.
+
+    Returns:
+        A list of :class:`ObjectiveResponse` with each objective and
+        its roadmap days.
+    """
+    service = ObjectiveService(session)
+    results = await service.list_by_user(
+        user_id=int(current_user["id"]),
+        offset=offset,
+        limit=limit,
+    )
+    return [ObjectiveResponse(**r) for r in results]
 
 
 @router.post("/register", response_model=ObjectiveResponse)
