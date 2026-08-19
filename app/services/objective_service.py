@@ -92,12 +92,13 @@ class ObjectiveService:
             HTTPException(502): If the AI provider fails to generate
                 the roadmap.
         """
-        if self._ensure_aware(command.due_date) < datetime.now(UTC):
+        due_date = self._ensure_aware(command.due_date)
+        now = datetime.now(UTC)
+        if due_date < now:
             raise HTTPException(status_code=400, detail="due_date cannot be in the past")
 
-        now = datetime.now(UTC)
         period_start = now
-        period_end = min(period_start + timedelta(days=self.ROADMAP_WINDOW_DAYS), command.due_date)
+        period_end = min(period_start + timedelta(days=self.ROADMAP_WINDOW_DAYS), due_date)
         roadmap, day_contents = await self._generate_roadmap(
             command,
             period_start=period_start,
@@ -109,7 +110,7 @@ class ObjectiveService:
         objective = await repo.create(
             title=command.title,
             description=command.description,
-            due_date=command.due_date,
+            due_date=due_date,
             user_id=user_id,
             roadmap=roadmap,
             roadmap_updated_at=now,
