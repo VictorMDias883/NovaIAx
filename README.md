@@ -79,7 +79,8 @@ NovaIAx/
 ├── tests/                    # Testes de integração e unitários
 ├── Infra/project.wsd         # Diagrama PlantUML da arquitetura
 ├── Dockerfile
-├── fly.toml                  # Deploy Fly.io (release_command roda migrações)
+├── render.yaml               # Deploy Render (Blueprint: web service + Postgres)
+├── entrypoint.sh             # Container entrypoint (migrações + uvicorn)
 ├── docker-compose.yml        # Gateway
 ├── docker-compose.data.yml   # Postgres + Redis
 ├── docker-compose.dev.yml    # Ambiente de desenvolvimento
@@ -154,8 +155,9 @@ alembic revision --autogenerate -m "descricao"   # gera nova migração a partir
   (`DATABASE_URL`) e o `Base.metadata` com todos os modelos registrados em `app/models/__init__.py`.
 - Enums (`UserRole`, `RoadmapDayStatus`) viram tipos nativos do Postgres
   (`user_role`, `roadmap_day_status`).
-- Em **Fly.io**, o `release_command = "alembic upgrade head"` no `fly.toml` roda as
-  migrações num machine temporário antes do novo deploy — se falhar, o deploy é abortado.
+- Em **Render**, o `entrypoint.sh` roda `alembic upgrade head` antes do
+  `uvicorn` no próprio container (equivalente in-process do `preDeployCommand`
+  pago da Render) — veja [DEPLOY.md](DEPLOY.md).
 - `init_db()` em `app/db/session.py` fica restrito aos testes (o `conftest.py` o chama).
 
 ### Testes

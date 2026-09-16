@@ -58,16 +58,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             rate-limit headers) or a 429 error response.
         """
         # Exempt health-check probes from rate limiting entirely so a burst
-        # of orchestrator/Fly probes can never be rejected with a 429.
+        # of orchestrator/probe requests can never be rejected with a 429.
         if request.url.path == "/health":
             return await call_next(request)
 
         now = time()
         # Use the real client IP as the rate-limit key.  ``get_client_ip``
-        # reads ``Fly-Client-IP``/``X-Forwarded-For`` (only when a trusted
-        # reverse proxy is configured) so that all requests behind the
-        # Fly.io edge proxy are bucketed per user instead of collapsing
-        # into one shared global limit.
+        # reads ``X-Forwarded-For`` (only when a trusted reverse proxy is
+        # configured) so that all requests behind the Render edge proxy are
+        # bucketed per user instead of collapsing into one shared global
+        # limit.
         client_ip = get_client_ip(request, self.settings)
         key = f"rate_limit:{client_ip}"
 

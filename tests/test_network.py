@@ -4,8 +4,8 @@ Unit tests for :func:`app.core.network.get_client_ip`.
 These tests build :class:`Request` objects directly (no ASGI server) and
 verify the client-IP resolution precedence:
 
-* ``Fly-Client-IP`` beats ``X-Forwarded-For`` beats ``request.client.host``
-  when ``trust_proxy_headers`` is enabled.
+* ``X-Forwarded-For`` (first entry) beats ``request.client.host`` when
+  ``trust_proxy_headers`` is enabled.
 * Proxy headers are **ignored** when ``trust_proxy_headers`` is disabled,
   so a malicious direct client cannot spoof its IP.
 """
@@ -39,7 +39,7 @@ def make_request(
 
 
 def trusted_settings() -> Settings:
-    """Settings with proxy-header trust enabled (Fly.io deployment)."""
+    """Settings with proxy-header trust enabled (Render deployment)."""
     return Settings(trust_proxy_headers=True)
 
 
@@ -51,29 +51,16 @@ def untrusted_settings() -> Settings:
 # --- Precedence when a trusted reverse proxy is configured ---------------
 
 
-def test_prefers_fly_client_ip_over_forwarded_for() -> None:
-    request = make_request(
-        headers={
-            "Fly-Client-IP": "203.0.113.9",
-            "X-Forwarded-For": "198.51.100.2, 192.0.2.1",
-        }
-    )
-    assert get_client_ip(request, trusted_settings()) == "203.0.113.9"
-
-
-def test_falls_back_to_first_forwarded_for_ip() -> None:
+def test_uses_first_forwarded_for_ip() -> None:
     request = make_request(
         headers={"X-Forwarded-For": "198.51.100.2, 192.0.2.1"}
     )
     assert get_client_ip(request, trusted_settings()) == "198.51.100.2"
 
 
-def test_ignores_empty_fly_header_and_uses_forwarded_for() -> None:
+def test_uses_forwarded_for_ip_when_no_proxy_header_whitespace() -> None:
     request = make_request(
-        headers={
-            "Fly-Client-IP": "   ",
-            "X-Forwarded-For": "198.51.100.2, 192.0.2.1",
-        }
+        headers={"X-Forwarded-For": "  198.51.100.2 , 192.0.2.1  "}
     )
     assert get_client_ip(request, trusted_settings()) == "198.51.100.2"
 
@@ -93,10 +80,7 @@ def test_returns_unknown_when_no_client_and_no_headers() -> None:
 
 def test_ignores_proxy_headers_when_not_trusted() -> None:
     request = make_request(
-        headers={
-            "Fly-Client-IP": "203.0.113.9",
-            "X-Forwarded-For": "198.51.100.2",
-        },
+        headers={"X-Forwarded-For": "198.51.100.2"},
         client=("spoofed-host", 12345),
     )
     assert get_client_ip(request, untrusted_settings()) == "spoofed-host"

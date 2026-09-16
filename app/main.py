@@ -73,7 +73,7 @@ settings = get_settings()
 # before starting the app:
 #
 #     alembic upgrade head          # local / Docker
-#     alembic upgrade head         # Fly.io (see release_command below)
+#     alembic upgrade head         # Render (container entrypoint, below)
 #
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -153,7 +153,8 @@ async def health() -> JSONResponse:
     Returns ``{"status": "ok", "db": "ok", "redis": "ok"}`` with HTTP 200
     when both dependencies are reachable.  If either check fails, the
     body reports the failing components as ``"error"`` and the response
-    status is **503** so Fly's health check marks the machine unhealthy.
+    status is **503** so Render's health check marks the instance
+    unhealthy.
 
     This endpoint is excluded from the auth middleware (public) and is
     fully exempted from rate limiting by :class:`RateLimitMiddleware`.

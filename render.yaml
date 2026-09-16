@@ -1,0 +1,90 @@
+# Render Blueprint configuration for the NovaIAx gateway.
+# Reference: https://render.com/docs/blueprint-spec
+#
+# Infrastructure provisioned on first Blueprint sync:
+#   - A Docker-based web service (builds the existing Dockerfile as-is) running
+#     uvicorn on port 8000, with ``/health`` as the health check path.
+#   - A managed PostgreSQL database whose connection string is injected into
+#     the web service's ``DATABASE_URL`` automatically via ``fromDatabase``.
+#   - Redis is NOT part of this file: Render's free tier has no managed
+#     Redis (Postgres only).  We keep Upstash Redis as planned — its
+#     connection string is provided manually as the ``REDIS_URL`` secret.
+#
+# Region: ``virginia`` (US East).  Render has no São Paulo region; current
+# regions are ``oregon | ohio | virginia | frankfurt | singapore``.  The
+# US East coast is the lowest-latency hop to Brazil's backbone, so
+# ``virginia`` is the closest of the available options for a Brazil-centric
+# user base.
+#
+# Plan: ``free``.  The free web service spins down after 15 min of idle
+# traffic and cold-starts in ~30-60s on the next request.  Swap ``free`` for
+# ``0.5c-512mb`` (Starter) to remove spin-down entirely.
+#
+# Migrations: the container entrypoint (``entrypoint.sh``) runs
+# ``alembic upgrade head`` before starting uvicorn.  Render's native
+# ``preDeployCommand`` is paid-plan-only, so it is intentionally not used
+# while the service is on the free plan (see DEPLOY.md for the upgrade path).
+
+services:
+  - type: web
+    name: novaiax-gateway
+    runtime: docker
+    region: virginia
+    plan: free
+    branch: main
+    healthCheckPath: /health
+    envVars:
+      # ── Non-secret configuration (safe to commit) ────────────────────────
+      - key: ENVIRONMENT
+        value: production
+      - key: GROQ_API_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_API_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: RATE_LIMIT_DEFAULT
+        value: "60"
+      - key: RATE_LIMIT_AI
+        value: "10"
+      - key: CACHE_TTL_DEFAULT
+        value: "60"
+      - key: CACHE_TTL_AI
+        value: "300"
+      - key: MAX_PAYLOAD_BYTES
+        value: "1048576"
+      # Trust the edge proxy's X-Forwarded-For when resolving the client IP
+      # for rate limiting.  Render's proxy overwrites this header for every
+      # request (single trusted hop), so it cannot be spoofed from outside.
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+
+      # ── Database: auto-injected connection string ─────────────────────────
+      # Render fills DATABASE_URL with the managed Postgres connection
+      # string (``postgresql://...``).  SQLAlchemy async accepts this scheme;
+      # no manual rewriting is needed (unlike Fly's asyncpg-only URLs).
+      - key: DATABASE_URL
+        fromDatabase:
+          name: novaiax-db
+          property: connectionString
+
+      # ── Secrets (prompted in the dashboard on first sync; never stored) ──
+      # Render asks for each of these during the initial Blueprint creation
+      # flow and keeps the values out of this repo.  On Blueprint *updates*
+      # Render ignores ``sync: false`` entries — set/rotate values from the
+      # service's Environment page in the dashboard.
+      - key: SECRET_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: MASTER_API_KEY
+        sync: false
+      - key: DEFAULT_ADMIN_PASSWORD
+        sync: false
+      # Upstash Redis connection string (``rediss://...``).  Render has no
+      # free managed Redis, so this points at our external Upstash instance.
+      - key: REDIS_URL
+        sync: false
+
+databases:
+  - name: novaiax-db
+    plan: free
+    region: virginia

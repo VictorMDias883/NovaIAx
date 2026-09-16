@@ -28,8 +28,7 @@ tests/
 conftest.py
 Infra/
 
-# Local-only infra (data services are provisioned externally on Fly)
+# Local-only infra (data services are provisioned externally on Render)
 docker-compose*.yml
 Dockerfile
-fly.toml
 DEPLOY.md

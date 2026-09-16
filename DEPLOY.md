@@ -1,232 +1,280 @@
-# Deployment — Fly.io
+# Deployment — Render
 
 Step-by-step guide for deploying NovaIAx (monolithic FastAPI gateway + backend)
-to Fly.io.  The app runs as a single Fly app with a Fly Postgres database and an
-Upstash Redis cache.
+to [Render](https://render.com).  The app runs as a single **web service** built
+from the existing `Dockerfile` (Docker runtime), backed by **Render-managed
+PostgreSQL** and an **Upstash Redis** cache.
 
-> **Assumes**: Prerequisites 1–5 are applied (rate limiter reads `Fly-Client-IP`,
-> `/health` verifies DB + Redis, Alembic migrations exist, security/secret
-> validation is in place, JWT/API-key roles are wired up).
+> **Migrated from Fly.io** (Nov 2026): Fly's free tier no longer exists, so
+> `fly.toml` was replaced by a `render.yaml` Blueprint.  This guide replaces the
+> old Fly guide end-to-end.
+
+> **Assumes**: the repo already implements `GET /health` (verifies DB + Redis),
+> Alembic migrations, secret validation (`_validate_production_secrets`), and
+> the rate limiter reads `X-Forwarded-For` behind `TRUST_PROXY_HEADERS=true`.
+
+---
+
+## 0. What `render.yaml` provisions
+
+The committed [`render.yaml`](render.yaml) Blueprint creates:
+
+| Resource | Details |
+| --- | --- |
+| Web service `novaiax-gateway` | `runtime: docker` — uses the existing `Dockerfile` as-is; region **`virginia`**, plan **`free`**, health check at **`/health`**. |
+| PostgreSQL `novaiax-db` | Render-managed Postgres, plan `free`. Its connection string is injected into the web service's `DATABASE_URL` via `fromDatabase` (no manual URL rewriting — the app normalises `postgresql://` → `postgresql+asyncpg://` internally). |
+| Secrets | `SECRET_KEY`, `GROQ_API_KEY`, `MASTER_API_KEY`, `DEFAULT_ADMIN_PASSWORD`, `REDIS_URL`, all declared `sync: false` → Render prompts for them on first sync; never stored in the repo. |
+
+### Regions
+
+Render's current regions are `oregon`, `ohio`, `virginia`, `frankfurt`,
+`singapore` — **there is no São Paulo region**.  For a Brazil-centric user
+base, **`virginia`** (US East) is the lowest-latency option (direct backbone
+routing from Brazil to the US east coast); `oregon` would add ~2× the round-trip
+time.
+
+### Plans
+
+- **`free`** web service: 0.1 CPU / 512 MB, **spins down after 15 min without
+  traffic** and cold-starts in ~30–60 s on the next request.  See
+  § [Free-tier behavior](#7-free-tier-behavior-and-the-flutter-app).
+- Switch `plan: free` → `0.5c-512mb` (Starter, ~$7/mo) in `render.yaml` to
+  remove spin-down entirely (available for both web service and database).
+
+> **Note**: Render's native `preDeployCommand` is **paid-plan-only**, which
+> is why migrations run via the container entrypoint instead (see § 5).
 
 ---
 
 ## 1. Prerequisites
 
-- A [Fly.io](https://fly.io) account and the Fly CLI installed:
-  ```bash
-  curl -L https://fly.io/install.sh | sh
-  # or: brew install flyctl
-  fly auth login
-  ```
+- A [Render](https://render.com) account (`dashboard.render.com/register`).
+- Your repository pushed to GitHub/GitLab (Render links to the repo that
+  contains `render.yaml`).
 - A [Groq API key](https://console.groq.com/) (used by the AI endpoints).
-- An [Upstash Redis](https://upstash.com/) account (or any Redis provider).
+- An [Upstash Redis](https://upstash.com/) account **(Render's free tier has no
+  managed Redis — only Postgres — so Redis stays on Upstash as planned)**.
 
 ---
 
-## 2. Create the Fly app
+## 2. Create the Blueprint from `render.yaml`
 
-`fly.toml` already exists in the repo, so you attach it to a new app on your
-account rather than using `fly launch` (which would generate a conflicting
-config):
+1. Commit and push `render.yaml` to the repo's `main` branch:
+   ```bash
+   git add render.yaml entrypoint.sh Dockerfile .dockerignore app/core/network.py DEPLOY.md
+   git commit -m "feat(deploy): migrate from Fly.io to Render blueprints"
+   git push origin main
+   ```
+2. In the [Render Dashboard](https://dashboard.render.com), click **New → Blueprint**.
+3. Choose the Git provider and select the `NovaIAx` repository (default branch
+   `main`).
+4. Render reads `render.yaml` and shows a preview of the resources it will
+   create:
+   - Web service **novaiax-gateway** (`runtime: docker`, region `virginia`)
+   - PostgreSQL **novaiax-db** (`plan: free`)
+5. Click **Apply**.  Render now prompts for every `sync: false` secret (see § 3).
 
+> Later updates to the repo do **not** re-prompt for `sync: false` secrets —
+> Render ignores them on Blueprint *updates*.  Set/rotate secret values from the
+> dashboard (§ 3).
+
+Optional: validate the file locally before pushing:
 ```bash
-fly apps create novaiax-gateway --machines
-# or, if the name is taken, pick a unique one:
-# fly apps create novaiax-gateway-<yourname> --machines
-# …and then set the matching ``app = "…"`` in fly.toml.
+# Install the Render CLI
+curl -fsSL https://raw.githubusercontent.com/render-oss/cli/refs/heads/main/bin/install.sh | sh
+# or: brew install render
+render login
+
+render blueprints validate render.yaml
 ```
-
-If you prefer an interactive run that asks you for a name and region:
-
-```bash
-fly launch --name novaiax-gateway --region gru --org personal --no-deploy --copy-config
-```
-
-`--copy-config` keeps the existing `fly.toml`; `--no-deploy` prevents an
-immediate deploy before secrets/database are configured.
-
-> **Region note**: `primary_region = "gru"` (São Paulo) is set in `fly.toml`
-> because the user base is Brazil-centric.
 
 ---
 
-## 3. Provision the database (Fly Postgres)
+## 3. Set secrets in the dashboard
 
-Create a small PostgreSQL cluster and attach it to the app:
+During the **initial Blueprint sync**, Render's UI asks you for a value for each
+`sync: false` variable.  Fill them in:
 
-```bash
-fly postgres create --name novaiax-db --region gru --initial-cluster-size 1 --vm-size shared-cpu-1x --volume-size 1
-```
+| Secret | Value |
+| --- | --- |
+| `SECRET_KEY` | `openssl rand -hex 32` (64-hex random) |
+| `MASTER_API_KEY` | `openssl rand -hex 24` (48-hex random) |
+| `GROQ_API_KEY` | your `gsk_…` key from [console.groq.com](https://console.groq.com) |
+| `DEFAULT_ADMIN_PASSWORD` | a strong password (required by `_validate_production_secrets` in `app/core/config.py` even if unused) |
+| `REDIS_URL` | your Upstash `rediss://…` connection string (§ 4) |
 
-- `shared-cpu-1x` is the cheapest VM; `--volume-size 1` (GB) keeps storage costs
-  near zero for an early-stage app.
-- If you didn't scope to a region at creation, you can set it later with
-  `fly regions set gru`.
+**Rotating / editing later** — Blueprint updates skip `sync: false`, so manage
+these per service:
 
-Attach the database to your app (this writes `DATABASE_URL` into the app's
-secrets automatically):
+1. Dashboard → your **service** (`novaiax-gateway`) → **Environment** tab.
+2. Click **Add Environment Variable** (or the value field to edit an existing
+   one); tick *Secret*.
+3. Save, then **Manual Deploy → Deploy latest commit** (or **Restart service**)
+   to apply them.
 
-```bash
-fly postgres attach novaiax-db --app novaiax-gateway
-```
-
-Verify the connection string got injected:
-
-```bash
-fly secrets list
-```
-
-The attached URL will look like `postgresql://novaiax:<password>@novaiax-db.flycast:5432/...`.
-The app expects an **asyncpg** URL, so the secret will need to be rewritten as
-`postgresql+asyncpg://…` (see the secrets section below).
+> Keep secrets out of `render.yaml` and out of git — only non-secret config
+> (ENVIRONMENT, GROQ_API_MODEL, RATE_LIMIT_*, CACHE_TTL_*, MAX_PAYLOAD_BYTES,
+> TRUST_PROXY_HEADERS) is declared as plain `value:` entries there.  `DATABASE_URL`
+> is injected automatically by `fromDatabase` and needs no action.
 
 ---
 
-## 4. Provision Redis (Upstash)
+## 4. Set up Upstash Redis
 
 NovaIAx depends on Redis for rate limiting, caching, conversation history, API
-keys, and token revocation.  Fly has no managed Redis, so use Upstash:
+keys, and token revocation.  Render's free tier exposes **only** managed
+Postgres, so keep Redis on Upstash:
 
 1. Create an account at <https://upstash.com> and log into the console.
-2. **Create database** → choose **Redis**, pick a name (e.g. `novaiax`), and
-   select the region closest to your users (Upstash São Paulo region if
-   available, otherwise `sa-east-1`).
-3. Enable **TLS** (default) — the connection string will start with `rediss://`.
-4. Copy the **REST / connection URL** from the dashboard:
+2. **Create database** → choose **Redis**, name it (e.g. `novaiax`), pick the
+   region closest to your users (Upstash's São Paulo region if available,
+   otherwise `sa-east-1`).
+3. Enable **TLS** (default) — the connection string starts with `rediss://`.
+4. Copy the connection URL:
    ```
    rediss://default:<password>@<region>-<something>.upstash.io:6379
    ```
-   This goes into the `REDIS_URL` secret below.
+5. Paste it into the `REDIS_URL` secret on the `novaiax-gateway` service
+   (§ 3).  Because `REDIS_URL` is declared `sync: false` in the Blueprint,
+   Render stores it as an encrypted secret — it is never committed.
 
-> Alternative: self-host Redis on another Fly app (`fly launch` + `redis:7-alpine`
-> + a volume) or use any provider offering a URL.  Upstash's free tier is
-> sufficient for low-traffic stages.
-
----
-
-## 5. Set secrets
-
-Set **all** secrets with `fly secrets set`.  Values marked `<…>` must be
-replaced with your own; generating good ones is shown where relevant.
-
-```bash
-# ---- Authentication / security ---------------------------------------------
-fly secrets set "SECRET_KEY=$(openssl rand -hex 32)"
-
-fly secrets set "MASTER_API_KEY=$(openssl rand -hex 24)"
-
-# Password for the legacy default admin flow (used by admins created via
-# scripts/tests only; real users sign up through /auth/register).
-fly secrets set "DEFAULT_ADMIN_PASSWORD=change-this-to-a-strong-password"
-
-# ---- Groq Cloud AI ----------------------------------------------------------
-fly secrets set "GROQ_API_KEY=<your-groq-api-key>"
-
-# ---- Database (attached above, but must be in asyncpg form) -----------------
-# Get the raw URL Fly attached:
-fly secrets list
-# It will look like:  postgresql://novaiax:XXXXX@novaiax-db.flycast:5432/novaiax
-# Rewrite the scheme to asyncpg:
-fly secrets set "DATABASE_URL=postgresql+asyncpg://novaiax:<XXXXX>@novaiax-db.flycast:5432/novaiax"
-
-# ---- Redis ------------------------------------------------------------------
-fly secrets set "REDIS_URL=rediss://default:<upstash-password>@<region>-<something>.upstash.io:6379"
-
-# ---- CORS (optional; defaults to localhost only) ----------------------------
-# Comma-separated origins that may call the API from browsers.
-fly secrets set "ALLOWED_ORIGINS=https://app.yourdomain.com,https://admin.yourdomain.com"
-```
-
-**Complete secret list** (reference for audits/rotation):
-
-| Secret                    | Example                                          |
-| ------------------------- | ------------------------------------------------ |
-| `SECRET_KEY`              | 64-hex random (`openssl rand -hex 32`)           |
-| `MASTER_API_KEY`          | 48-hex random (`openssl rand -hex 24`)           |
-| `DEFAULT_ADMIN_PASSWORD`  | strong password                                  |
-| `GROQ_API_KEY`            | `gsk_…`                                          |
-| `DATABASE_URL`            | `postgresql+asyncpg://user:pass@app.flycast:5432/novaiax` |
-| `REDIS_URL`               | `rediss://default:pass@host.upstash.io:6379`     |
-| `ALLOWED_ORIGINS`         | `https://app.example.com`                        |
-
-> Non-secret env vars (`ENVIRONMENT`, `GROQ_API_MODEL`, `RATE_LIMIT_*`,
-> `CACHE_TTL_*`, `MAX_PAYLOAD_BYTES`, `TRUST_PROXY_HEADERS`) live in the
-> `[env]` section of `fly.toml` already — no need to set them manually.
-
-> `DEFAULT_ADMIN_PASSWORD` is only referenced by the legacy flow; the app
-> boots fine without it, but it is required by `_validate_production_secrets`
-> in `app/core/config.py` — do not skip it.
+> The free Upstash tier is sufficient for low-traffic stages.  If you later move
+> to a paid Render plan, you can swap Upstash for [Render Key Value](https://render.com/docs/key-value)
+> if desired — but that is a separate change, not required to deploy.
 
 ---
 
-## 6. Deploy
+## 5. Migrations: how Alembic runs on Render
 
-```bash
-fly deploy
-```
+Render's platform-level **pre-deploy command** (`preDeployCommand` in
+`render.yaml`) is available **only for paid services**, so while the service is
+on the free plan migrations run **inside the container**:
 
-What happens automatically (from `fly.toml`):
+- `Dockerfile`'s `CMD` is `/app/entrypoint.sh`.
+- `entrypoint.sh` runs `alembic upgrade head` (idempotent no-op when the schema
+  is current), then `exec uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+- With `set -e`, a **failed migration stops the script**: the container exits
+  non-zero, uvicorn never starts, and Render fails the deploy (old version keeps
+  serving via zero-downtime).
 
-1. `release_command = "alembic upgrade head"` runs on a throwaway machine —
-   applies migrations to Fly Postgres before any new machine serves traffic.
-2. The `api` machine boots `uvicorn app.main:app` on port 8000.
-3. Fly waits (`grace_period = "10s"`) then probes `GET /health` every `15s`.
-   If DB **and** Redis are reachable, Fly marks the machine ready and starts
-   routing traffic.  Otherwise the machine stays unhealthy until the checks pass.
-4. With `min_machines_running = 0` + `auto_stop_machines`/`auto_start_machines`,
-   the machine scales to zero when idle and cold-starts on the next request
-   (5–15 s delay on first hit).  Set `min_machines_running = 1` in `fly.toml`
-   to keep one machine always warm — costs a bit more, removes cold starts.
+**Tradeoff vs. a pre-deploy hook:** a real `preDeployCommand` runs on a separate
+instance *before* the deploy, cleanly aborting the deploy on failure.  The
+in-process entrypoint achieves the same guardrail (migration failure → container
+crash → deploy marked failed) but couples migrations to the serving instance's
+lifecycle — they also re-run on every **free-tier cold start** (adds a moment to
+spin-up).  If you swap `&&` for `;` in `entrypoint.sh`, a failed migration would
+let uvicorn still try to boot against an unmigrated schema — generally **not**
+what you want.
+
+> **Upgrade path:** move the service to a paid plan (`0.5c-512mb` or higher),
+> then add to `render.yaml` and delete the migration step from `entrypoint.sh`:
+> ```yaml
+>     preDeployCommand: alembic upgrade head
+> ```
 
 ---
 
-## 7. Verify the deployment
+## 6. Trigger a deploy & tail logs
 
-Tail the logs:
+### Manual deploy
 
+**Dashboard:** open the service's **Deploys** page → **Manual Deploy →
+Deploy latest commit**.
+
+**CLI:**
 ```bash
-fly logs
-# Recent log lines will include startup messages, the release_command
-# migration output, and per-request structured JSON logs.
+render login
+render deploys create novaiax-gateway --wait
+# or by service ID: render deploys create srv-abc123
 ```
 
-Check the health endpoint directly:
+Pushing to `main` auto-deploys by default (Blueprint default `autoDeployTrigger:
+commit`).
+
+### Tailing logs
+
+**Dashboard:** service → **Logs** tab (streams build, migration, and request
+logs).
+
+**CLI:**
+```bash
+render logs --resources <service-id> --tail
+# filter during a deploy: render logs -r <service-id> --text "alembic" --tail
+```
+
+`render services` lists your services and shows their IDs; `render deploys
+create novaiax-gateway` also streams deploy logs live.
+
+Deploy pipeline per Render: **build** (Docker image) → **start command**
+(`entrypoint.sh`) → live.  The migration output appears at the top of the start
+phase.
+
+---
+
+## 7. Verify `/health` post-deploy
+
+Once the deploy shows **Live** and the health check passes:
 
 ```bash
 # Health is public (exempt from auth + rate limiting):
-curl -s https://novaiax-gateway.fly.dev/health
+curl -s https://novaiax-gateway.onrender.com/health
 # => {"status":"ok","db":"ok","redis":"ok"}
 ```
 
-A non-200 or `{"status":"error"}` means one dependency is down — the endpoint
-reports which one in `db` / `redis`.
+- HTTP **200** with all `ok` → DB and Redis reachable.
+- HTTP **503** or `{"status":"error"}` → the failing component is reported in
+  `db` / `redis` (check `REDIS_URL` and `DATABASE_URL` secrets).
 
-Inspect machine status:
+Swagger UI is served at `/docs`, e.g. `https://novaiax-gateway.onrender.com/docs`.
 
-```bash
-fly status
-# Look for "running", 1 desired, 1 healthy.
-```
+> The actual subdomain appears in the dashboard (Render may suffix the name if
+> `novaiax-gateway` is taken).  Replace it in the commands above.
 
-Put the hostname in real traffic from `gru`:
+---
 
-```bash
-curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" https://novaiax-gateway.fly.dev/health
-curl -s https://novaiax-gateway.fly.dev/docs           # Swagger UI
-```
+## Free-tier behavior and the Flutter app
+
+The **free** web-service plan has two behaviors that matter for clients:
+
+1. **Spin-down**: after **15 minutes** with no inbound traffic the instance
+   stops; the next request triggers a cold start that takes **~30–60 s** (or
+   longer on a heavily loaded queue).  The first request after idle can fail or
+   time out from the client's perspective.
+2. **Expiring database**: the free Postgres database **expires 30 days after
+   creation** (1 GB cap).  After expiry there is a 14-day grace period to upgrade
+   before the DB is deleted.  Plan a migration to a paid DB plan (or free-tier
+   re-provisioning) before day 30.
+
+Implications:
+
+- **Backend-facing**: `/health` is enough for Render's checks.  No change needed
+  server-side to handle spin-up.
+- **Flutter app (client-facing) — action required**: the mobile client's HTTP
+  timeouts must tolerate the cold-start window.  If the Flutter client uses a
+  default `http`/`dio` timeout (< 10–15 s), the **first request after spin-down
+  will time out**.  Ensure the timeout is ≥ 60–90 s, or add a retry-on-timeout
+  with backoff, or pin the app open / warm the service.  **This is a client
+  change to schedule on the Flutter side** — tracked as a separate item, not
+  fixed by this repo.
+- **Options to avoid the delay** (pick one when traffic justifies it):
+  - Upgrade the web service to `0.5c-512mb` (Starter, ~$7/mo) — no spin-down.
+  - Keep a lightweight uptime pinger hitting `/health` every ≤ 10 min (consumes
+    free monthly instance hours — 750 h ≈ 31 days always-on).
 
 ---
 
 ## 8. First real users / smoke test
 
 ```bash
+BASE=https://novaiax-gateway.onrender.com
+
 # Register the first user (becomes admin automatically):
-curl -s -X POST https://novaiax-gateway.fly.dev/api/v1/auth/register \
+curl -s -X POST "$BASE/api/v1/auth/register" \
   -H "Content-Type: application/json" \
   -d '{"full_name":"Admin","email":"admin@example.com","password":"S3cure!Passw0rd"}'
 
 # Login and grab tokens:
-curl -s -X POST https://novaiax-gateway.fly.dev/api/v1/auth/login \
+curl -s -X POST "$BASE/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.com","password":"S3cure!Passw0rd"}'
 ```
@@ -236,18 +284,28 @@ curl -s -X POST https://novaiax-gateway.fly.dev/api/v1/auth/login \
 ## Redeploys / future deploys
 
 ```bash
-git pull         # get latest code
-fly deploy       # release_command runs migrations again (idempotent no-op)
-fly logs         # watch it come up
+git pull && git push     # merge into main → auto-deploy
+# or manually: render deploys create novaiax-gateway --wait
+# watch: render logs --resources <service-id> --tail
 ```
+
+Migrations re-run through `entrypoint.sh` on each deploy (idempotent no-op if
+nothing changed).
+
+> If you ever delete the Blueprint resources and re-sync, you must re-enter all
+> `sync: false` secrets (§ 3) — and the free Postgres 30-day clock restarts.
+
+---
 
 ## Common issues
 
-| Symptom                                        | Fix                                                                 |
-| ---------------------------------------------- | ------------------------------------------------------------------- |
-| `/health` returns `redis: error`               | Wrong/missing `REDIS_URL`; verify the Upstash `rediss://…` string.  |
-| `/health` returns `db: error`                  | `DATABASE_URL` not in `asyncpg` form, or the DB is asleep. Restart it. |
-| App boots then shuts down                      | `release_command` failed — read the release logs: `fly deploy` output (or `fly logs`). Check migration filenames vs. models. |
-| Cold start feels slow                          | Acceptable for early stage.  Or set `min_machines_running = 1`.     |
-| 401 on everything including `/health`          | `/health` is exempt; if other routes 401, set `SECRET_KEY`/tokens correctly. |
-| `SECRET_KEY must be set…Raises RuntimeError`   | `ENVIRONMENT=production` + a placeholder/empty `SECRET_KEY`. Rotate it. |
+| Symptom | Fix |
+| --- | --- |
+| `/health` returns `redis: error` | Wrong/missing `REDIS_URL`; verify the Upstash `rediss://…` string in the service's **Environment** tab, then redeploy/restart. |
+| `/health` returns `db: error` | `DATABASE_URL` missing or the DB expired/upgraded. Re-check the `fromDatabase` link and the Postgres resource status. |
+| Deploy fails at start (`entrypoint` exits non-zero) | `alembic upgrade head` failed — read the deploy logs (`render logs -r <id> --text alembic --tail`) and check migration filenames vs. models. |
+| First request after idle is slow / times out | Free-tier cold start (~30–60 s). Raise the Flutter client timeout to ≥ 60–90 s or upgrade to a paid plan (§ 7). |
+| 401 on everything including `/health` | `/health` is exempt; if other routes 401, check `SECRET_KEY`/token configuration. |
+| `SECRET_KEY must be set…Raises RuntimeError` | `ENVIRONMENT=production` + placeholder `SECRET_KEY`. Rotate it in the Env/Secrets tab and redeploy. |
+| Secret added in dashboard not taking effect | `sync: false` values are only prompted on *initial* Blueprint sync; edit them directly on the service's **Environment** page, then redeploy. |
+| Commit to `main` doesn't deploy | Check **Auto-Deploy** on the service (Blueprint sets `commit`), and that the Blueprint repo/branch match. |

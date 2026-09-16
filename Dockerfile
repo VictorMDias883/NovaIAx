@@ -25,6 +25,13 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt
 # only invalidates when application source files change.
 COPY . .
 
+# Ensure the migration/start entrypoint is executable regardless of how the
+# repository checkout preserved file modes.
+RUN chmod +x entrypoint.sh
+
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run database migrations (alembic upgrade head) before starting uvicorn —
+# see entrypoint.sh for details.  Render builds this Dockerfile as-is and
+# runs the image's CMD on every instance spin-up.
+CMD ["/app/entrypoint.sh"]

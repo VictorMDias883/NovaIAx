@@ -138,8 +138,8 @@ async def proxy_request(
     }
     # Inject the original client IP and the authenticated user so
     # downstream services can perform their own access control if needed.
-    # ``get_client_ip`` resolves the real IP (via Fly-Client-IP /
-    # X-Forwarded-For only when a trusted proxy is configured).
+    # ``get_client_ip`` resolves the real IP (via X-Forwarded-For only
+    # when a trusted proxy is configured).
     headers["X-Forwarded-For"] = get_client_ip(request, settings)
     headers["X-Gateway-User"] = current_user.get("full_name", "anonymous")
 

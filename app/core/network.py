@@ -5,10 +5,12 @@ This module centralises client-IP resolution so that middleware (rate
 limiter, logging) and handlers (proxy header injection) all agree on the
 "real" client address for an incoming request.
 
-On Fly.io every request arrives through Fly's edge proxy, so
-``request.client.host`` is always the proxy's address, not the user's.
-Fly sets the real client IP in the ``Fly-Client-IP`` header and also
-appends to ``X-Forwarded-For``.  However, trusting those headers is only
+Behind Render's edge proxy every request arrives with
+``request.client.host`` set to the proxy's address, not the user's.
+Render's load balancer terminates the client connection and sets (not
+appends to) the ``X-Forwarded-For`` header to the client's real IP for
+every request — there is exactly one trusted hop, so the first/only entry
+in the header is safe to trust.  However, trusting proxy headers is only
 safe when a trusted reverse proxy is guaranteed to sit in front of the
 app; otherwise a malicious client could spoof its apparent IP by
 injecting arbitrary header values.  The :attr:`Settings.trust_proxy_headers`
@@ -26,10 +28,9 @@ def get_client_ip(request: Request, settings: Settings | None = None) -> str:
     When ``settings.trust_proxy_headers`` is enabled, the following
     precedence is used:
 
-    1. ``Fly-Client-IP`` — set automatically by Fly.io's edge proxy.
-    2. The first IP in ``X-Forwarded-For`` — standard reverse-proxy
-       convention (leftmost entry is the original client).
-    3. ``request.client.host`` — direct connection, no proxy involved.
+    1. The first IP in ``X-Forwarded-For`` — set by Render's edge proxy
+       (single trusted hop; the leftmost entry is the original client).
+    2. ``request.client.host`` — direct connection, no proxy involved.
 
     When ``settings.trust_proxy_headers`` is disabled (the default), the
     proxy headers are **ignored entirely** and ``request.client.host`` is
@@ -48,12 +49,10 @@ def get_client_ip(request: Request, settings: Settings | None = None) -> str:
     settings = settings or get_settings()
 
     # Only trust proxy-set headers when a trusted reverse proxy (e.g. the
-    # Fly.io edge proxy) is guaranteed to be in front of the app.
+    # Render edge proxy) is guaranteed to be in front of the app.  Render
+    # overwrites ``X-Forwarded-For`` for every request it forwards, so the
+    # first entry is the real client and cannot be spoofed from outside.
     if settings.trust_proxy_headers:
-        fly_client_ip = request.headers.get("Fly-Client-IP")
-        if fly_client_ip and fly_client_ip.strip():
-            return fly_client_ip.strip()
-
         forwarded_for = request.headers.get("X-Forwarded-For")
         if forwarded_for and forwarded_for.strip():
             first_ip = forwarded_for.split(",")[0].strip()

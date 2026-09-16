@@ -17,6 +17,25 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _normalize_database_url(url: str) -> str:
+    """Rewrite a plain PostgreSQL URL onto the ``asyncpg`` driver scheme.
+
+    Render's managed Postgres connection string (injected via Blueprint
+    ``fromDatabase``) uses the bare ``postgresql://`` scheme.  The app's
+    async engine (:mod:`app.db.session`) and Alembic
+    (:mod:`migrations.env`) both require the ``postgresql+asyncpg://``
+    form — the only async driver installed in production.  Normalising
+    here keeps every consumer consistent and is idempotent for URLs that
+    already use the asyncpg scheme.
+    """
+    if not url:
+        return url
+    for scheme in ("postgresql+asyncpg://", "postgres://", "postgresql://"):
+        if url.startswith(scheme):
+            return f"postgresql+asyncpg://{url[len(scheme):]}"
+    return url
+
+
 class DownstreamService(BaseModel):
     """Represents a downstream microservice that the gateway proxies to.
 
@@ -62,7 +81,7 @@ class Settings(BaseSettings):
     refresh_token_ttl_days: int = 7      # Longer-lived refresh tokens.
 
     # --- Redis / caching -----------------------------------------------------
-    # In production (Fly.io, etc.) REDIS_URL and DATABASE_URL MUST be set
+    # In production (Render, etc.) REDIS_URL and DATABASE_URL MUST be set
     # explicitly via environment variables.  The Docker-compose hostnames
     # ("redis", "postgres") only work inside a Docker network, so we gate
     # the fallback on ENVIRONMENT != "production" to get a loud failure
@@ -72,11 +91,13 @@ class Settings(BaseSettings):
         or ("redis://redis:6379/0" if os.getenv("ENVIRONMENT", "development") != "production" else "")
     )
     database_url: str = Field(
-        default_factory=lambda: os.getenv("DATABASE_URL")
-        or (
-            "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax"
-            if os.getenv("ENVIRONMENT", "development") != "production"
-            else ""
+        default_factory=lambda: _normalize_database_url(
+            os.getenv("DATABASE_URL")
+            or (
+                "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax"
+                if os.getenv("ENVIRONMENT", "development") != "production"
+                else ""
+            )
         )
     )
     cache_ttl_default: int = 60          # Default cache TTL in seconds.
@@ -127,11 +148,11 @@ class Settings(BaseSettings):
     rate_limit_default: int = 60   # Requests per minute for general endpoints.
     rate_limit_ai: int = 10        # Stricter limit for AI endpoints.
 
-    # Trust proxy-set client-IP headers (``Fly-Client-IP``, ``X-Forwarded-For``)
-    # when resolving the real client IP.  MUST only be enabled when the app sits
-    # behind a trusted reverse proxy (e.g. the Fly.io edge proxy); local dev and
-    # any direct connection keep this ``False`` so client-supplied headers
-    # cannot be spoofed.
+    # Trust proxy-set client-IP headers (``X-Forwarded-For``) when
+    # resolving the real client IP.  MUST only be enabled when the app sits
+    # behind a trusted reverse proxy (e.g. the Render edge proxy); local
+    # dev and any direct connection keep this ``False`` so client-supplied
+    # headers cannot be spoofed.
     trust_proxy_headers: bool = False
 
     # --- Payload limits ------------------------------------------------------
@@ -260,8 +281,8 @@ def _validate_production_secrets() -> None:
     if not settings.database_url:
         raise RuntimeError(
             "DATABASE_URL must be set when ENVIRONMENT=production. "
-            "Use a Fly Postgres connection string, e.g. "
-            "postgresql+asyncpg://user:pass@<app>.flycast:5432/dbname"
+            "Use a PostgreSQL connection string, e.g. "
+            "postgresql+asyncpg://user:pass@<database-host>:5432/dbname"
         )
     if not settings.redis_url:
         raise RuntimeError(

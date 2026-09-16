@@ -47,8 +47,8 @@ async def init_db() -> None:
         This function is intended **exclusively for the test suite**
         (and local dev) where running ``alembic upgrade head`` against a
         throwaway SQLite database is impractical.  Production and
-        Fly.io deployments must use ``alembic upgrade head`` via the
-        release command instead.
+        Render deployments must use ``alembic upgrade head`` via the
+        container entrypoint instead.
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
