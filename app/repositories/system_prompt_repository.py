@@ -18,7 +18,10 @@ class SystemPromptRepository:
         self.session = session
 
     async def list(self, offset: int = 0, limit: int = 100) -> list[SystemPrompt]:
-        stmt = select(SystemPrompt).offset(offset).limit(limit)
+        # Deterministic ordering (id ASC) so pagination results are stable
+        # across calls — without an ORDER BY Postgres may return rows in any
+        # order, making offset/limit pagination non-deterministic.
+        stmt = select(SystemPrompt).order_by(SystemPrompt.id.asc()).offset(offset).limit(limit)
         result = await self.session.execute(stmt)
         return result.scalars().all()
 

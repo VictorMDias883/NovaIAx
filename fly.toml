@@ -1,0 +1,76 @@
+# Fly.io deployment configuration for NovaIAx gateway.
+# Reference: https://fly.io/docs/reference/configuration/
+#
+# Secrets (set via ``fly secrets set``, NOT in this file):
+#   SECRET_KEY, MASTER_API_KEY, GROQ_API_KEY, DEFAULT_ADMIN_PASSWORD,
+#   DATABASE_URL, REDIS_URL
+#
+# Non-secret env vars are declared in [env] below.
+
+app = "novaiax-gateway"
+primary_region = "gru"
+
+# ── Deploy: run migrations before starting new machines ──────────────────────
+# ``release_command`` runs on a temporary Fly machine with the same image
+# and environment as the app.  If this command exits non-zero, the deploy
+# is aborted before any new machine starts serving traffic.
+#
+# ``alembic upgrade head`` applies every pending migration in order.
+# Because Alembic is idempotent, running it on an already-migrated
+# database is a no-op (~50ms).
+[deploy]
+  release_command = "alembic upgrade head"
+
+# ── Non-secret environment variables ─────────────────────────────────────────
+# Secrets (SECRET_KEY, GROQ_API_KEY, DATABASE_URL, REDIS_URL, …) must be
+# set via ``fly secrets set`` — they are never stored in this file.
+[env]
+  ENVIRONMENT = "production"
+  GROQ_API_MODEL = "openai/gpt-oss-120b"
+  GROQ_API_BASE_URL = "https://api.groq.com/openai/v1"
+  RATE_LIMIT_DEFAULT = "60"
+  RATE_LIMIT_AI = "10"
+  CACHE_TTL_DEFAULT = "60"
+  CACHE_TTL_AI = "300"
+  MAX_PAYLOAD_BYTES = "1048576"
+  TRUST_PROXY_HEADERS = "true"
+
+# ── HTTP service ─────────────────────────────────────────────────────────────
+# Cost-efficiency tradeoff:
+#   min_machines_running = 0  →  machines scale to zero when idle.  Cheapest
+#       option but users hitting a cold machine will see a ~5-15s startup
+#       delay (image pull + uvicorn boot).  Acceptable for an early-stage
+#       app with low, bursty traffic.
+#   min_machines_running = 1  →  one machine is always warm.  Eliminates
+#       cold starts but costs ~$2-3/mo for a basic Fly machine even when
+#       idle.
+# We choose 0 to keep costs minimal; promote to 1 once traffic justifies it.
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 250
+    soft_limit = 200
+
+# ── Health check ─────────────────────────────────────────────────────────────
+# Fly probes this endpoint before routing traffic to a machine.
+# ``/health`` returns 200 only when both the database and Redis are reachable
+# (see ``app.core.health``); if either dependency is down the endpoint
+# returns 503 and Fly keeps the machine in a "not ready" state.
+#
+# grace_period: time after boot before Fly starts probing.  10s gives
+#   uvicorn time to start and Alembic migrations (via release_command)
+#   to have already run.
+# interval: how often Fly re-probes once the machine is healthy.
+# timeout: max time Fly waits for a response from /health.
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "15s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"

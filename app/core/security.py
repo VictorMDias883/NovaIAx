@@ -18,15 +18,15 @@ This module provides:
    bypasses validation.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from jose import jwt
 from passlib.context import CryptContext
 
 from app.cache.redis_client import RedisClient
 from app.core.config import Settings, get_settings
-
 
 # ---------------------------------------------------------------------------
 # JWT helpers
@@ -45,6 +45,7 @@ def create_access_token(
         - ``email``: The user's email.
         - ``role``: The user's current RBAC role at login time.
         - ``type``: always ``"access"``.
+        - ``jti``: A unique token ID (used for revocation on logout).
         - ``iat``: issued-at timestamp (UTC).
         - ``exp``: expiration timestamp (UTC), ``access_token_ttl_minutes``
           minutes from now.
@@ -59,10 +60,11 @@ def create_access_token(
         A compact JWT string signed with the configured secret key.
     """
     settings = settings or get_settings()
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     payload = {
         "sub": subject,
         "type": "access",
+        "jti": uuid4().hex,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.access_token_ttl_minutes)).timestamp()),
     }
@@ -80,14 +82,15 @@ def create_refresh_token(
     """Create a long-lived JWT **refresh token**.
 
     Structurally identical to :func:`create_access_token` but with
-    ``type`` set to ``"refresh"`` and a TTL of ``refresh_token_ttl_days``
-    days instead of minutes.
+    ``type`` set to ``"refresh"``, a unique ``jti``, and a TTL of
+    ``refresh_token_ttl_days`` days instead of minutes.
     """
     settings = settings or get_settings()
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     payload = {
         "sub": subject,
         "type": "refresh",
+        "jti": uuid4().hex,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(days=settings.refresh_token_ttl_days)).timestamp()),
     }
@@ -167,12 +170,14 @@ class ApiKeyService:
 
         Returns ``True`` if the key is valid, ``False`` otherwise.
         """
-        if not api_key:
+        # Never accept an empty or whitespace-only key.  The truthiness of
+        # ``master_key`` below also guarantees an empty configured master
+        # key can never silently match any request.
+        if not api_key or not api_key.strip():
             return False
-        if self.settings.master_api_key and api_key == self.settings.master_api_key:
+        master_key = self.settings.master_api_key
+        if master_key and api_key == master_key:
             return True
         client = await self.redis_client.get_client()
         stored_hash = await client.get(f"api_key:{api_key[:8]}")
-        if stored_hash and pwd_context.verify(api_key, stored_hash):
-            return True
-        return False
+        return bool(stored_hash and pwd_context.verify(api_key, stored_hash))

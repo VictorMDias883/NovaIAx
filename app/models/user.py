@@ -24,10 +24,20 @@ from app.db.session import Base
 
 
 class UserRole(str, Enum):
-    """Application-level user roles."""
+    """Application-level user roles.
+
+    ``SERVICE`` is the transient role assigned to API-key-authenticated
+    requests.  It is **never persisted** — it only exists in-memory in
+    the identity dict produced by :func:`app.api.deps.get_current_user`.
+    It is declared here so role comparisons (e.g. ``role in
+    [UserRole.ADMIN, UserRole.SERVICE]``) always resolve against a known
+    enum member instead of silently comparing against an undeclared
+    value.
+    """
 
     USER = "USER"
     ADMIN = "ADMIN"
+    SERVICE = "SERVICE"
 
 
 class User(Base):

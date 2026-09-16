@@ -21,6 +21,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.redis_client import RedisClient
+from app.cache.token_denylist import TokenDenylist, get_token_denylist as get_shared_token_denylist
 from app.core.config import get_settings
 from app.core.security import ApiKeyService, decode_token
 from app.db.session import SessionLocal
@@ -52,6 +53,11 @@ async def get_redis_client() -> RedisClient:
     return RedisClient()
 
 
+async def get_token_denylist() -> TokenDenylist:
+    """Dependency that provides the application-wide :class:`TokenDenylist`."""
+    return get_shared_token_denylist()
+
+
 async def _load_user(user_id: str, session: AsyncSession | None) -> User:
     """Load a user by ID, opening a temporary session when needed.
 
@@ -73,6 +79,7 @@ async def get_current_user(
     request: Request,
     api_key_service: ApiKeyService = Depends(get_api_key_service),
     session: AsyncSession | None = Depends(get_session),
+    denylist: TokenDenylist = Depends(get_token_denylist),
 ) -> dict[str, object]:
     """Authenticate the current request and return the user identity.
 
@@ -81,7 +88,8 @@ async def get_current_user(
     1. **Bearer JWT token** — The ``Authorization`` header must contain
        ``Bearer <jwt>``.  The token is decoded and verified.  Only
        tokens with ``type == "access"`` are accepted (refresh tokens
-       are rejected).
+       are rejected).  Tokens whose ``jti`` has been revoked (e.g. via
+       logout) are rejected with a 401.
 
     2. **API key** — The ``X-API-Key`` header must contain a valid API
        key.  The key is validated against the master key or a hash
@@ -95,6 +103,8 @@ async def get_current_user(
             validation.
         session: A request-scoped database session (or ``None`` when
             called outside FastAPI's DI container).
+        denylist: The :class:`TokenDenylist` used to reject revoked
+            tokens (or ``None`` when called without DI).
 
     Returns:
         A dictionary with ``id``, ``full_name``, ``email``, and ``role``
@@ -112,6 +122,8 @@ async def get_current_user(
     # instance.  Detect that situation and create a real instance.
     if not isinstance(api_key_service, ApiKeyService):
         api_key_service = ApiKeyService()
+    if not isinstance(denylist, TokenDenylist):
+        denylist = get_shared_token_denylist()
 
     # --- JWT Bearer token authentication ---
     if authorization and authorization.startswith("Bearer "):
@@ -125,6 +137,10 @@ async def get_current_user(
         # must be used with the /auth/refresh endpoint instead.
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
+
+        jti = payload.get("jti")
+        if jti and await denylist.is_revoked(jti):
+            raise HTTPException(status_code=401, detail="Token has been revoked")
 
         user_id = payload.get("sub")
         if not user_id:
@@ -140,7 +156,7 @@ async def get_current_user(
 
     # --- API key authentication ---
     if api_key and await api_key_service.authenticate_api_key(api_key):
-        return {"id": "api-key", "full_name": "API Key", "email": "api-key", "role": "SERVICE"}
+        return {"id": "api-key", "full_name": "API Key", "email": "api-key", "role": UserRole.SERVICE.value}
 
     # --- No valid credentials provided ---
     raise HTTPException(status_code=401, detail="Authentication required")

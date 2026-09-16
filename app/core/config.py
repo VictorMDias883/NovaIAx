@@ -12,7 +12,6 @@ configuration without re-parsing the environment on every call.
 
 import json
 import os
-from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -63,11 +62,21 @@ class Settings(BaseSettings):
     refresh_token_ttl_days: int = 7      # Longer-lived refresh tokens.
 
     # --- Redis / caching -----------------------------------------------------
-    redis_url: str = Field(default_factory=lambda: os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    # In production (Fly.io, etc.) REDIS_URL and DATABASE_URL MUST be set
+    # explicitly via environment variables.  The Docker-compose hostnames
+    # ("redis", "postgres") only work inside a Docker network, so we gate
+    # the fallback on ENVIRONMENT != "production" to get a loud failure
+    # instead of a silent DNS error at runtime.
+    redis_url: str = Field(
+        default_factory=lambda: os.getenv("REDIS_URL")
+        or ("redis://redis:6379/0" if os.getenv("ENVIRONMENT", "development") != "production" else "")
+    )
     database_url: str = Field(
-        default_factory=lambda: os.getenv(
-            "DATABASE_URL",
-            "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax",
+        default_factory=lambda: os.getenv("DATABASE_URL")
+        or (
+            "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax"
+            if os.getenv("ENVIRONMENT", "development") != "production"
+            else ""
         )
     )
     cache_ttl_default: int = 60          # Default cache TTL in seconds.
@@ -117,6 +126,13 @@ class Settings(BaseSettings):
     # --- Rate limiting -------------------------------------------------------
     rate_limit_default: int = 60   # Requests per minute for general endpoints.
     rate_limit_ai: int = 10        # Stricter limit for AI endpoints.
+
+    # Trust proxy-set client-IP headers (``Fly-Client-IP``, ``X-Forwarded-For``)
+    # when resolving the real client IP.  MUST only be enabled when the app sits
+    # behind a trusted reverse proxy (e.g. the Fly.io edge proxy); local dev and
+    # any direct connection keep this ``False`` so client-supplied headers
+    # cannot be spoofed.
+    trust_proxy_headers: bool = False
 
     # --- Payload limits ------------------------------------------------------
     max_payload_bytes: int = 1024 * 1024  # 1 MiB maximum request body size.
@@ -183,6 +199,79 @@ def _validate_admin_password() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Production secret / master-key validation
+# ---------------------------------------------------------------------------
+# Known placeholder values that must never be active in production.
+_PLACEHOLDER_VALUES: set[str] = {
+    "change-me-in-production",
+    "changeme123",
+    "replace-with-strong-key",
+    "your-secret-key",
+    "your-password",
+    "placeholder",
+}
+
+
+def _validate_master_api_key_visibility() -> None:
+    """Emit a warning at startup whenever a master API key is configured.
+
+    The master key bypasses per-key validation entirely so its use must
+    be auditable.  The warning is emitted on first settings load.
+    """
+    settings = get_settings()
+    if not settings.master_api_key:
+        return
+    from app.core.logging import get_logger
+
+    logger = get_logger(__name__)
+    logger.warning(
+        "MASTER_API_KEY is set — any request carrying this value is fully "
+        "trusted and bypasses per-API-key validation.",
+    )
+
+
+def _validate_production_secrets() -> None:
+    """Hard-fail at boot when running in production with placeholder secrets.
+
+    When ``ENVIRONMENT == "production"``, the application raises
+    :class:`RuntimeError` if any of the following hold:
+
+    * ``SECRET_KEY`` still equals its default placeholder.
+    * ``MASTER_API_KEY`` is unset or equals a known placeholder.
+    * ``GROQ_API_KEY`` is unset.
+    """
+    settings = get_settings()
+    if settings.environment != "production":
+        return
+    if settings.secret_key == "change-me-in-production":
+        raise RuntimeError(
+            "SECRET_KEY must be set to a strong, non-default value "
+            "when ENVIRONMENT=production."
+        )
+    if not settings.master_api_key or settings.master_api_key in _PLACEHOLDER_VALUES:
+        raise RuntimeError(
+            "MASTER_API_KEY must be set to a strong, non-placeholder value "
+            "when ENVIRONMENT=production."
+        )
+    if not settings.groq_api_key:
+        raise RuntimeError(
+            "GROQ_API_KEY must be set when ENVIRONMENT=production."
+        )
+    if not settings.database_url:
+        raise RuntimeError(
+            "DATABASE_URL must be set when ENVIRONMENT=production. "
+            "Use a Fly Postgres connection string, e.g. "
+            "postgresql+asyncpg://user:pass@<app>.flycast:5432/dbname"
+        )
+    if not settings.redis_url:
+        raise RuntimeError(
+            "REDIS_URL must be set when ENVIRONMENT=production. "
+            "Use an Upstash Redis URL, e.g. "
+            "rediss://default:<password>@<endpoint>:6379"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Singleton accessor
 # ---------------------------------------------------------------------------
 # The settings object is cached in this module-level variable so that
@@ -203,4 +292,6 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
         _validate_admin_password()
+        _validate_master_api_key_visibility()
+        _validate_production_secrets()
     return _settings

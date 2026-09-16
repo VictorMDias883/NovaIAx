@@ -5,7 +5,8 @@ API v1 router for AI chat completion requests.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_session
+from app.api.deps import get_current_user, get_redis_client, get_session
+from app.cache.redis_client import RedisClient
 from app.clients.ai_client import GroqAIClient
 from app.commands.chat_completion_command import ChatCompletionCommand
 from app.schemas.chat_schemas import ChatCompletionRequest, ChatCompletionResponse
@@ -19,6 +20,7 @@ async def chat_completion(
     payload: ChatCompletionRequest,
     current_user: dict = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    redis_client: RedisClient = Depends(get_redis_client),
 ) -> ChatCompletionResponse:
     """Create a chat completion using the configured AI provider."""
     try:
@@ -27,6 +29,6 @@ async def chat_completion(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     ai_client = GroqAIClient()
-    service = ChatCompletionService(session=session, ai_client=ai_client)
+    service = ChatCompletionService(session=session, ai_client=ai_client, cache=redis_client)
     result = await service.create_completion(command)
     return ChatCompletionResponse(**result)

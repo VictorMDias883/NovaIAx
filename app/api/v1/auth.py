@@ -118,9 +118,11 @@ async def logout(
 ) -> TokenResponse:
     """Log out the user and invalidate the refresh token.
 
-    The refresh token is blacklisted so that it can no longer be used
-    to obtain new access tokens.  After a successful logout the client
-    should discard all existing tokens.
+    The refresh token's ``jti`` is stored in a Redis denylist with a TTL
+    matching its remaining lifetime.  After a successful logout the
+    token can no longer be used to obtain new access tokens (via
+    ``/auth/refresh``), and any access token sharing a revoked ``jti``
+    is rejected by :func:`get_current_user`.
 
     Args:
         payload: Request body containing the ``refresh_token``.
@@ -134,7 +136,7 @@ async def logout(
     """
     service = AuthService(session)
     try:
-        await service.refresh(payload.refresh_token)
+        await service.logout(payload.refresh_token)
     except HTTPException:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     return TokenResponse(access_token="", refresh_token="")

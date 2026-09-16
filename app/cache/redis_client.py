@@ -12,7 +12,6 @@ Redis server (e.g. local development, CI pipelines) while still
 providing the same interface.
 """
 
-import json
 from typing import Any
 
 # Attempt to import the async Redis client.  If the ``redis`` package
@@ -87,6 +86,10 @@ class RedisClient:
     which may be either a real Redis connection or the in-memory store.
     """
 
+    # Registry of live instances, so the fallback state can be reset between
+    # tests (see :meth:`reset_all_memory_stores`).
+    _instances: list["RedisClient"] = []
+
     def __init__(self, settings: Settings | None = None) -> None:
         """Initialise the client.
 
@@ -97,6 +100,23 @@ class RedisClient:
         self.settings = settings or get_settings()
         self._client: Any | None = None
         self._memory_store = InMemoryStore()
+        RedisClient._instances.append(self)
+
+    def reset_memory_store(self) -> None:
+        """Clear this client's in-memory fallback store.
+
+        Used by the test suite to prevent rate-limiter state recorded by
+        one test from leaking into the next.  No-op when the client is
+        backed by a real Redis server.
+        """
+        self._memory_store._data.clear()
+        self._memory_store._sorted_sets.clear()
+
+    @classmethod
+    def reset_all_memory_stores(cls) -> None:
+        """Clear the in-memory fallback store of every live :class:`RedisClient`."""
+        for instance in cls._instances:
+            instance.reset_memory_store()
 
     async def get_client(self) -> Any:
         """Return the underlying Redis (or in-memory) client.

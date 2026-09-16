@@ -17,6 +17,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.logging import get_logger
+from app.core.network import get_client_ip
 
 logger = get_logger(__name__)
 
@@ -54,7 +55,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 "path": request.url.path,
                 "status_code": response.status_code,
                 "duration_ms": duration_ms,
-                "client_ip": request.client.host if request.client else None,
+                "client_ip": get_client_ip(request),
             },
         )
         return response

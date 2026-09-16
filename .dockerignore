@@ -1,0 +1,35 @@
+# Never ship local secrets or dev artifacts in the image.
+.env
+.env.*
+!.env.example
+
+# VCS / IDE / OS
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+*~
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+
+# Tests and docs (not needed at runtime)
+tests/
+conftest.py
+Infra/
+
+# Local-only infra (data services are provisioned externally on Fly)
+docker-compose*.yml
+Dockerfile
+fly.toml
+DEPLOY.md

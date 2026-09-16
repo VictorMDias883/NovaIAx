@@ -49,6 +49,16 @@ class JsonFormatter(logging.Formatter):
         # ``logger.error(..., exc_info=True)``, include the traceback.
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
+        # Merge structured ``extra=`` context (e.g. the failing component
+        # of a health check) so it is preserved in the JSON output.
+        for key, value in record.__dict__.items():
+            if key not in log_record and key not in {
+                "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+                "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+                "created", "msecs", "relativeCreated", "thread", "threadName",
+                "processName", "process", "message", "taskName",
+            }:
+                log_record[key] = value
         return json.dumps(log_record)
 
 

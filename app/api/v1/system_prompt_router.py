@@ -5,7 +5,7 @@ API v1 router for administrator-managed system prompts.
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_session, require_admin
+from app.api.deps import get_session, require_admin
 from app.schemas.system_prompt_schemas import (
     SystemPromptListResponse,
     SystemPromptRequest,
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/system-prompts", tags=["system-prompts"])
 async def list_system_prompts(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> SystemPromptListResponse:
     service = SystemPromptService(session)

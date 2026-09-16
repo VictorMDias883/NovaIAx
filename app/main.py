@@ -20,6 +20,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # ---------------------------------------------------------------------------
 # Path bootstrap
@@ -36,13 +37,16 @@ if str(PROJECT_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 from app.api.v1.router import router as v1_router
 from app.core.config import get_settings
-from app.core.logging import configure_logging
-from app.db.session import init_db
+from app.core.health import check_database, check_redis
+from app.core.logging import configure_logging, get_logger
 from app.exceptions.handlers import register_exception_handlers
 from app.middlewares.auth_middleware import AuthMiddleware
 from app.middlewares.logging_middleware import LoggingMiddleware
 from app.middlewares.rate_limit_middleware import RateLimitMiddleware
 from app.middlewares.security_headers_middleware import SecurityHeadersMiddleware
+
+# Module-level logger used by the health-check endpoint.
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Global setup
@@ -62,17 +66,25 @@ settings = get_settings()
 # ---------------------------------------------------------------------------
 # The lifespan context manager replaces the deprecated ``@app.on_event``
 # decorators.  It runs once when the application starts up and once when it
-# shuts down.  On startup we create all database tables that are defined by
-# models inheriting from ``Base`` (e.g. ``User``, ``Objective``).
+# shuts down.
+#
+# IMPORTANT: The database schema is managed exclusively by Alembic.  The
+# application must NOT create or alter tables at startup.  Run migrations
+# before starting the app:
+#
+#     alembic upgrade head          # local / Docker
+#     alembic upgrade head         # Fly.io (see release_command below)
+#
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifecycle: create database tables on startup.
+    """Application lifecycle handler.
 
-    Calls :func:`init_db` which uses ``Base.metadata.create_all`` to
-    create all tables defined by ORM models.  This is idempotent — it
-    only creates tables that do not already exist.
+    All database schema changes are handled by Alembic migrations run
+    before the application starts (via ``alembic upgrade head``).  No
+    table creation happens here — this avoids accidentally running
+    ``create_all()`` against a production database where the schema
+    should only evolve via versioned migrations.
     """
-    await init_db()
     yield
 
 
@@ -131,10 +143,41 @@ register_exception_handlers(app)
 # Health-check endpoint
 # ---------------------------------------------------------------------------
 @app.get("/health")
-async def health() -> dict[str, str]:
-    """Simple liveness probe used by orchestrators (e.g. Kubernetes, Docker).
+async def health() -> JSONResponse:
+    """Combined liveness/readiness probe used by orchestrators and probes.
 
-    Returns a 200 OK with a JSON body ``{"status": "ok"}`` when the
-    application is running and able to accept requests.
+    Performs a real dependency check on every call:
+        - Runs ``SELECT 1`` against the database (2s timeout).
+        - Pings Redis via a fresh connection (2s timeout).
+
+    Returns ``{"status": "ok", "db": "ok", "redis": "ok"}`` with HTTP 200
+    when both dependencies are reachable.  If either check fails, the
+    body reports the failing components as ``"error"`` and the response
+    status is **503** so Fly's health check marks the machine unhealthy.
+
+    This endpoint is excluded from the auth middleware (public) and is
+    fully exempted from rate limiting by :class:`RateLimitMiddleware`.
     """
-    return {"status": "ok"}
+    db_status = await check_database()
+    redis_status = await check_redis(settings.redis_url)
+
+    # Emit a distinct, easily-greppable log line on failure so degraded
+    # health checks stand out from the generic request-completed lines.
+    if db_status == "error" or redis_status == "error":
+        logger.warning(
+            "health_check_failed",
+            extra={
+                "db": db_status,
+                "redis": redis_status,
+                "path": "/health",
+            },
+        )
+
+    all_ok = db_status == "ok" and redis_status == "ok"
+    status = "ok" if all_ok else "error"
+    status_code = 200 if all_ok else 503
+
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": status, "db": db_status, "redis": redis_status},
+    )

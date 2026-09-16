@@ -67,20 +67,23 @@ NovaIAx/
 │   ├── cache/redis_client.py # Cliente Redis com fallback em memória
 │   ├── clients/ai_client.py  # Abstração AIClient + GroqAIClient
 │   ├── commands/             # Objetos de comando (RegisterUser, Login, etc.)
-│   ├── core/                 # Config, logging, security (JWT/hash)
-│   ├── db/session.py         # Engine assíncrono + Base
+│   ├── core/                 # Config, logging, security (JWT/hash), health, network
+│   ├── db/session.py         # Engine assíncrono + Base + init_db (apenas testes)
 │   ├── exceptions/handlers.py# Handlers globais de erro
 │   ├── middlewares/          # Auth, RateLimit, Logging, SecurityHeaders
 │   ├── models/               # User, Objective, RoadmapDay, SystemPrompt (SQLAlchemy)
 │   ├── repositories/         # Camada de acesso a dados
 │   ├── schemas/              # Modelos Pydantic
 │   └── services/             # Regras de negócio
+├── migrations/               # Migrações Alembic (env.py, script.py.mako, versions/)
 ├── tests/                    # Testes de integração e unitários
 ├── Infra/project.wsd         # Diagrama PlantUML da arquitetura
 ├── Dockerfile
+├── fly.toml                  # Deploy Fly.io (release_command roda migrações)
 ├── docker-compose.yml        # Gateway
 ├── docker-compose.data.yml   # Postgres + Redis
 ├── docker-compose.dev.yml    # Ambiente de desenvolvimento
+├── alembic.ini
 ├── conftest.py
 └── requirements.txt
 ```
@@ -105,18 +108,55 @@ docker compose -f docker-compose.data.yml up -d
 # 3. Instale as dependências
 pip install -r requirements.txt
 
-# 4. Execute
+# 4. Aplique as migrações do banco
+alembic upgrade head
+
+# 5. Execute
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### Docker (stack completa)
 
+O `docker-compose.yml` raiz sobe `postgres`, `redis` e a API `api` (com `alembic upgrade head`
+rodando automaticamente antes do `uvicorn`):
+
 ```bash
-docker compose -f docker-compose.data.yml up -d   # Postgres + Redis
-docker compose up --build                          # Gateway
+docker compose up -d       # Postgres + Redis + Gateway (aplicando migrações)
 ```
 
+Para inspeção, os arquivos separados continuam disponíveis:
+
+```bash
+docker compose -f docker-compose.data.yml up -d                          # apenas Postgres + Redis
+docker compose -f docker-compose.dev.yml run --rm api alembic upgrade head  # apenas migrações
+docker compose -f docker-compose.dev.yml up --build                      # apenas o Gateway
+```
+
+> **Importante:** dentro dos containers o `DATABASE_URL` precisa apontar para o serviço
+> `postgres` (ex.: `postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax`, como no
+> `.env.example`). Se o `.env` local usa um IP/porta do host (`192.168.x.x`), o Gateway em
+> container não alcança o banco — ajuste antes de subir a stack.
+
 Acesse a documentação interativa (Swagger) em `http://localhost:8000/docs`.
+
+## Migrações (Alembic)
+
+O schema é versionado com [Alembic](https://alembic.sqlalchemy.org/) e a aplicação
+**não** cria tabelas no startup (o antigo `Base.metadata.create_all()` no lifespan foi
+removido). Antes de iniciar o app é preciso aplicar as migrações:
+
+```bash
+alembic upgrade head        # aplica migrações pendentes
+alembic revision --autogenerate -m "descricao"   # gera nova migração a partir dos modelos
+```
+
+- O `migrations/env.py` usa o mesmo `async` engine configurado em `app/db/session.py`
+  (`DATABASE_URL`) e o `Base.metadata` com todos os modelos registrados em `app/models/__init__.py`.
+- Enums (`UserRole`, `RoadmapDayStatus`) viram tipos nativos do Postgres
+  (`user_role`, `roadmap_day_status`).
+- Em **Fly.io**, o `release_command = "alembic upgrade head"` no `fly.toml` roda as
+  migrações num machine temporário antes do novo deploy — se falhar, o deploy é abortado.
+- `init_db()` em `app/db/session.py` fica restrito aos testes (o `conftest.py` o chama).
 
 ### Testes
 

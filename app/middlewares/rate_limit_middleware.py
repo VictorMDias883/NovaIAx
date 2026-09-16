@@ -25,6 +25,7 @@ from starlette.responses import JSONResponse
 from app.cache.redis_client import RedisClient
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.network import get_client_ip
 
 logger = get_logger(__name__)
 
@@ -56,9 +57,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             A :class:`Response` — either the downstream response (with
             rate-limit headers) or a 429 error response.
         """
+        # Exempt health-check probes from rate limiting entirely so a burst
+        # of orchestrator/Fly probes can never be rejected with a 429.
+        if request.url.path == "/health":
+            return await call_next(request)
+
         now = time()
-        # Use the client's IP address as the rate-limit key.
-        key = f"rate_limit:{request.client.host if request.client else 'unknown'}"
+        # Use the real client IP as the rate-limit key.  ``get_client_ip``
+        # reads ``Fly-Client-IP``/``X-Forwarded-For`` (only when a trusted
+        # reverse proxy is configured) so that all requests behind the
+        # Fly.io edge proxy are bucketed per user instead of collapsing
+        # into one shared global limit.
+        client_ip = get_client_ip(request, self.settings)
+        key = f"rate_limit:{client_ip}"
 
         # Select the appropriate limit: stricter for AI endpoints.
         path = request.url.path

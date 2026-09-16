@@ -34,6 +34,7 @@ from app.api.deps import get_current_user, get_redis_client
 from app.cache.redis_client import RedisClient
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.core.network import get_client_ip
 
 # Create a sub-router with the ``/proxy`` prefix and ``proxy`` tag.
 router = APIRouter(prefix="/proxy", tags=["proxy"])
@@ -59,7 +60,7 @@ async def _cache_key(path: str, params: str, method: str) -> str:
     Returns:
         A cache key string in the format ``cache:<path>:<sha256_digest>``.
     """
-    digest = hashlib.sha256(f"{method}:{path}:{params}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(f"{method}:{path}:{params}".encode()).hexdigest()
     return f"cache:{path}:{digest}"
 
 
@@ -135,10 +136,12 @@ async def proxy_request(
         for key, value in request.headers.items()
         if key.lower() not in {"host", "authorization", "cookie", "x-api-key"}
     }
-    # Inject the original client IP and the authenticated username so
+    # Inject the original client IP and the authenticated user so
     # downstream services can perform their own access control if needed.
-    headers["X-Forwarded-For"] = request.client.host if request.client else "unknown"
-    headers["X-Gateway-User"] = current_user.get("username", "anonymous")
+    # ``get_client_ip`` resolves the real IP (via Fly-Client-IP /
+    # X-Forwarded-For only when a trusted proxy is configured).
+    headers["X-Forwarded-For"] = get_client_ip(request, settings)
+    headers["X-Gateway-User"] = current_user.get("full_name", "anonymous")
 
     # --- 5. Build the downstream URL ---
     # ``service_name`` may contain sub-paths (e.g. "ai/chat").  The first

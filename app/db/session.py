@@ -42,10 +42,13 @@ class Base(DeclarativeBase):
 async def init_db() -> None:
     """Create all database tables defined by models that inherit from :class:`Base`.
 
-    This function should be called once at application startup (or
-    before running tests) to ensure the database schema exists.
-    It uses ``Base.metadata.create_all`` which is idempotent — it
-    only creates tables that do not already exist.
+    .. warning::
+
+        This function is intended **exclusively for the test suite**
+        (and local dev) where running ``alembic upgrade head`` against a
+        throwaway SQLite database is impractical.  Production and
+        Fly.io deployments must use ``alembic upgrade head`` via the
+        release command instead.
     """
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
