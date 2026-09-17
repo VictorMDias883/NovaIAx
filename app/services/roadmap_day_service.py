@@ -76,13 +76,22 @@ class RoadmapDayService:
         # in window order.
         to_create: list[RoadmapDay] = []
         result_days: list[RoadmapDay] = []
+        existing_to_refresh: list[RoadmapDay] = []
 
         for day_number in range(1, total + 1):
             day_date = datetime.combine(start_date + timedelta(days=day_number - 1), time.min, tzinfo=UTC)
             content = contents.get(day_number) if contents else None
             if day_date.date() in existing_map:
                 # Use the existing persisted day for this calendar date.
-                result_days.append(existing_map[day_date.date()])
+                existing_day = existing_map[day_date.date()]
+                # A renewal may regenerate a window whose calendar dates
+                # already have days (e.g. clock skew or an early renewal).
+                # Apply the fresh meta so day records stay in sync with the
+                # new roadmap instead of silently keeping the old content.
+                if content and content != existing_day.content:
+                    existing_day.content = content
+                    existing_to_refresh.append(existing_day)
+                result_days.append(existing_day)
             else:
                 # Create an unsaved RoadmapDay instance to be persisted.
                 to_create.append(
@@ -94,6 +103,9 @@ class RoadmapDayService:
                         content=content,
                     )
                 )
+
+        if existing_to_refresh:
+            await self.session.commit()
 
         # Persist any newly created days and refresh them to obtain IDs.
         created: list[RoadmapDay] = []

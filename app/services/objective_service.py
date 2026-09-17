@@ -32,8 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.ai_client import AIClient, GroqAIClient
 from app.commands.register_objective_command import RegisterObjectiveCommand
+from app.core.logging import get_logger
 from app.repositories.objective_repository import ObjectiveRepository
 from app.services.roadmap_day_service import RoadmapDayService
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from app.models.roadmap_day import RoadmapDay
@@ -402,20 +405,30 @@ class ObjectiveService:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            pass
+            logger.warning(
+                "AI roadmap response is not valid JSON; trying to extract embedded JSON",
+                extra={"ai_response": text[:500]},
+            )
 
         fence_match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
         if fence_match:
             try:
                 return json.loads(fence_match.group(1).strip())
             except json.JSONDecodeError:
-                pass
+                logger.warning(
+                    "AI roadmap code fence contains invalid JSON",
+                    extra={"ai_response": fence_match.group(1)[:500]},
+                )
 
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end > start:
             try:
                 return json.loads(text[start : end + 1])
             except json.JSONDecodeError:
-                pass
+                logger.warning(
+                    "AI roadmap response contains no parseable JSON object; "
+                    "objective will be created with the raw AI text and no per-day metas",
+                    extra={"ai_response": text[:500]},
+                )
 
         return None

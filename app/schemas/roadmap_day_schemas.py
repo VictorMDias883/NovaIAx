@@ -2,13 +2,15 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.roadmap_day import RoadmapDayStatus
 
 
 class RoadmapDayResponse(BaseModel):
     """Response body for a single roadmap day."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     objective_id: int

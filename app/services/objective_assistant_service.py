@@ -20,6 +20,9 @@ from app.cache.conversation_cache import ConversationCache
 from app.clients.ai_client import AIClient
 from app.commands.objective_assistant_command import ObjectiveAssistantCommand
 from app.commands.register_objective_command import RegisterObjectiveCommand
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from app.services.objective_service import ObjectiveService
@@ -141,6 +144,17 @@ class ObjectiveAssistantService:
                 return json.loads(text[start : end + 1])
             except json.JSONDecodeError:
                 pass
+
+        # The assistant may legitimately reply in natural language while
+        # still collecting the objective data, so this is not fatal.  Only
+        # surface a warning when the reply *looks* like a broken JSON
+        # attempt (contains brace and objective keys) so the failure is not
+        # silent.
+        if "{" in text and ("titulo" in text or "title" in text or "prazo" in text or "due_date" in text):
+            logger.warning(
+                "Objective assistant reply looks like a malformed JSON objective payload",
+                extra={"assistant_reply": text[:500]},
+            )
 
         return None
 

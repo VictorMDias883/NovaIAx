@@ -77,11 +77,16 @@ class RoadmapDayRepository:
         return result.scalars().first()
 
     async def list_by_objective(self, objective_id: int) -> list[RoadmapDay]:
-        """Return all roadmap days of an objective ordered by day number."""
+        """Return all roadmap days of an objective in calendar order.
+
+        ``day_number`` restarts at 1 on every 7-day renewal window, so it
+        alone cannot order days across windows — ordering must be by
+        ``day_date`` first (with ``day_number`` as a tiebreaker).
+        """
         stmt = (
             select(RoadmapDay)
             .where(RoadmapDay.objective_id == objective_id)
-            .order_by(RoadmapDay.day_number)
+            .order_by(RoadmapDay.day_date, RoadmapDay.day_number)
         )
         result = await self.session.execute(stmt)
         return result.scalars().all()

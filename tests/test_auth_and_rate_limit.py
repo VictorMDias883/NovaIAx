@@ -154,11 +154,17 @@ def test_api_key_authentication_returns_service_role() -> None:
     service-level (non-user) role — the ``SERVICE`` member of
     ``UserRole`` — so role checks that enumerate enum members resolve
     correctly against a declared value.
-    """
-    from starlette.requests import Request
-    from starlette.datastructures import Headers
 
+    The API-key service is injected with a deterministic master key so the
+    test is independent of ``MASTER_API_KEY`` in the local ``.env``.
+    """
     from app.api.deps import get_current_user
+    from app.core.config import Settings
+    from app.core.security import ApiKeyService
+    from starlette.datastructures import Headers
+    from starlette.requests import Request
+
+    master_key = "replace-with-strong-key"
 
     async def run() -> dict[str, object]:
         request = Request(
@@ -166,7 +172,7 @@ def test_api_key_authentication_returns_service_role() -> None:
                 "type": "http",
                 "method": "GET",
                 "path": "/",
-                "headers": Headers({"x-api-key": "replace-with-strong-key"}).raw,
+                "headers": Headers({"x-api-key": master_key}).raw,
                 "scheme": "http",
                 "server": ("testserver", 80),
                 "query_string": b"",
@@ -174,7 +180,8 @@ def test_api_key_authentication_returns_service_role() -> None:
                 "root_path": "",
             }
         )
-        return await get_current_user(request, api_key_service=None)
+        api_key_service = ApiKeyService(settings=Settings(master_api_key=master_key))
+        return await get_current_user(request, api_key_service=api_key_service)
 
     identity = asyncio.run(run())
     assert identity["role"] == "SERVICE"
