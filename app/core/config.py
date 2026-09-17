@@ -13,7 +13,7 @@ configuration without re-parsing the environment on every call.
 import json
 import os
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -90,16 +90,28 @@ class Settings(BaseSettings):
         default_factory=lambda: os.getenv("REDIS_URL")
         or ("redis://redis:6379/0" if os.getenv("ENVIRONMENT", "development") != "production" else "")
     )
-    database_url: str = Field(
-        default_factory=lambda: _normalize_database_url(
-            os.getenv("DATABASE_URL")
-            or (
-                "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax"
-                if os.getenv("ENVIRONMENT", "development") != "production"
-                else ""
-            )
+    database_url: str | None = Field(
+        default_factory=lambda: os.getenv("DATABASE_URL")
+        or (
+            "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax"
+            if os.getenv("ENVIRONMENT", "development") != "production"
+            else ""
         )
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_database_url_any_source(cls, value: str | None) -> str | None:
+        """Normalise ``DATABASE_URL`` regardless of its source.
+
+        Pydantic-settings only applies the field's ``default_factory`` when
+        no env var is present, so a ``DATABASE_URL`` provided by the
+        platform (e.g. Render's managed Postgres ``postgresql://`` string)
+        would otherwise bypass :func:`_normalize_database_url`.  This
+        validator runs for every source, keeping the URL on the asyncpg
+        driver scheme the async engine requires.
+        """
+        return _normalize_database_url(value) if value else value
     cache_ttl_default: int = 60          # Default cache TTL in seconds.
     cache_ttl_ai: int = 300              # Cache TTL for AI responses (longer).
 
