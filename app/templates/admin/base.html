@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Admin{% endblock %} · NovaIAx</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body>
+  <nav class="topnav">
+    <span class="brand">NovaIAx Admin</span>
+    <div class="links">
+      <a href="/admin">Dashboard</a>
+      <a href="/admin/users">Users</a>
+      <a href="/admin/system-prompts">System Prompts</a>
+      <span class="user">{{ admin.full_name }} ({{ admin.email }})</span>
+      <form method="post" action="/admin/logout" class="inline">
+        <button type="submit" class="btn btn-sm">Logout</button>
+      </form>
+    </div>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

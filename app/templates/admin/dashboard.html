@@ -1,0 +1,25 @@
+{% extends "admin/base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<section class="stats">
+  <div class="card">
+    <span class="num">{{ stats.total_users }}</span>
+    <span class="label">Users</span>
+  </div>
+  <div class="card">
+    <span class="num">{{ stats.total_admins }}</span>
+    <span class="label">Administrators</span>
+  </div>
+  <div class="card">
+    <span class="num">{{ stats.total_prompts }}</span>
+    <span class="label">System prompts</span>
+  </div>
+</section>
+
+<section class="actions">
+  <a class="btn" href="/admin/users">Manage users</a>
+  <a class="btn" href="/admin/system-prompts">Manage system prompts</a>
+</section>
+{% endblock %}

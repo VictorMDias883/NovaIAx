@@ -1,0 +1,69 @@
+{% extends "admin/base.html" %}
+{% block title %}System Prompts{% endblock %}
+{% block content %}
+<h1>System Prompts</h1>
+
+{% if message %}
+  <div class="flash flash-ok">{{ message }}</div>
+{% endif %}
+{% if error %}
+  <div class="flash flash-error">{{ error }}</div>
+{% endif %}
+
+<h2>New prompt</h2>
+<form method="post" action="/admin/system-prompts">
+  <div class="form-group">
+    <label for="tipo">Type</label>
+    <input type="text" id="tipo" name="tipo" required maxlength="100">
+  </div>
+  <div class="form-group">
+    <label for="system_prompt">Prompt</label>
+    <textarea id="system_prompt" name="system_prompt" required maxlength="5000"></textarea>
+  </div>
+  <button type="submit" class="btn">Create</button>
+</form>
+
+<h2>Existing prompts</h2>
+{% if prompts %}
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Type</th>
+      <th>Prompt</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for prompt in prompts %}
+    <tr>
+      <td>{{ prompt.id }}</td>
+      <td>{{ prompt.tipo }}</td>
+      <td><div class="prompt-preview" title="{{ prompt.system_prompt }}">{{ prompt.system_prompt }}</div></td>
+      <td>
+        <div class="actions-cell">
+          <a class="btn btn-sm" href="/admin/system-prompts/{{ prompt.id }}/edit">Edit</a>
+          <form method="post" action="/admin/system-prompts/{{ prompt.id }}/delete" class="inline"
+                onsubmit="return confirm('Delete this system prompt?');">
+            <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+          </form>
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="pagination">
+  {% if page > 1 %}
+    <a href="/admin/system-prompts?page={{ page - 1 }}">Previous</a>
+  {% endif %}
+  <span>Page {{ page }} of {{ ((total + limit - 1) // limit) or 1 }} ({{ total }} prompts)</span>
+  {% if page * limit < total %}
+    <a href="/admin/system-prompts?page={{ page + 1 }}">Next</a>
+  {% endif %}
+</div>
+{% else %}
+<p>No system prompts found.</p>
+{% endif %}
+{% endblock %}

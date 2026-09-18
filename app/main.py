@@ -21,6 +21,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 # ---------------------------------------------------------------------------
 # Path bootstrap
@@ -31,11 +32,13 @@ from fastapi.responses import JSONResponse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+APP_DIR = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
 # Application imports (must come *after* the path bootstrap above)
 # ---------------------------------------------------------------------------
 from app.api.v1.router import router as v1_router
+from app.api.admin import register_admin_exception_handler, router as admin_router
 from app.core.config import get_settings
 from app.core.health import check_database, check_redis
 from app.core.logging import configure_logging, get_logger
@@ -75,6 +78,9 @@ settings = get_settings()
 #     alembic upgrade head          # local / Docker
 #     alembic upgrade head         # Render (container entrypoint, below)
 #
+# Migrations always run before uvicorn starts (via ``entrypoint.sh``), so by
+# the time this handler runs the schema is guaranteed to be up to date.  That
+# makes this the right place to bootstrap the default ADMIN account.
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifecycle handler.
@@ -84,7 +90,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     table creation happens here — this avoids accidentally running
     ``create_all()`` against a production database where the schema
     should only evolve via versioned migrations.
+
+    Data bootstrap: a default ADMIN account is created on startup when no
+    administrator exists yet (see :func:`app.db.bootstrap.ensure_default_admin`).
+    This is idempotent — once an admin exists, every subsequent restart is a
+    no-op.
+
+    The bootstrap module is imported lazily (rather than at module level) to
+    keep DB-side startup logic out of the import-time path.
     """
+    from app.db.bootstrap import ensure_default_admin
+
+    await ensure_default_admin()
     yield
 
 
@@ -115,9 +132,9 @@ app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,  # Origins permitted to make cross-origin requests.
-    allow_credentials=True,                   # Allow cookies / Authorization headers in CORS requests.
-    allow_methods=["*"],                      # Permit all HTTP methods (GET, POST, PUT, DELETE, …).
-    allow_headers=["*"],                      # Permit all request headers.
+    allow_credentials=True,  # Allow cookies / Authorization headers in CORS requests.
+    allow_methods=["*"],  # Permit all HTTP methods (GET, POST, PUT, DELETE, …).
+    allow_headers=["*"],  # Permit all request headers.
 )
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(LoggingMiddleware)
@@ -131,12 +148,23 @@ app.add_middleware(RateLimitMiddleware)
 # defined in ``v1_router`` are relative to this prefix.
 app.include_router(v1_router, prefix="/api/v1")
 
+# Server-rendered admin panel.  The routes define their own ``/admin``
+# namespace and handle their own cookie-based authentication (see
+# :mod:`app.api.admin`), so no extra prefix is applied.
+app.include_router(admin_router)
+
+# Static assets used by the admin panel templates.
+app.mount("/admin/static", StaticFiles(directory=APP_DIR / "static"), name="admin_static")
+
 # ---------------------------------------------------------------------------
 # Exception handler registration
 # ---------------------------------------------------------------------------
 # Register custom exception handlers that return consistent JSON error
 # responses and log unexpected failures.
 register_exception_handlers(app)
+
+# The admin panel's own redirect handler (see :mod:`app.api.admin`).
+register_admin_exception_handler(app)
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ def _normalize_database_url(url: str) -> str:
         return url
     for scheme in ("postgresql+asyncpg://", "postgres://", "postgresql://"):
         if url.startswith(scheme):
-            return f"postgresql+asyncpg://{url[len(scheme):]}"
+            return f"postgresql+asyncpg://{url[len(scheme) :]}"
     return url
 
 
@@ -77,8 +77,8 @@ class Settings(BaseSettings):
     # via the ``SECRET_KEY`` environment variable.
     secret_key: str = Field(default_factory=lambda: os.getenv("SECRET_KEY", "change-me-in-production"))
     jwt_algorithm: str = "HS256"
-    access_token_ttl_minutes: int = 15   # Short-lived access tokens.
-    refresh_token_ttl_days: int = 7      # Longer-lived refresh tokens.
+    access_token_ttl_minutes: int = 15  # Short-lived access tokens.
+    refresh_token_ttl_days: int = 7  # Longer-lived refresh tokens.
 
     # --- Redis / caching -----------------------------------------------------
     # In production (Render, etc.) REDIS_URL and DATABASE_URL MUST be set
@@ -87,15 +87,19 @@ class Settings(BaseSettings):
     # the fallback on ENVIRONMENT != "production" to get a loud failure
     # instead of a silent DNS error at runtime.
     redis_url: str = Field(
-        default_factory=lambda: os.getenv("REDIS_URL")
-        or ("redis://redis:6379/0" if os.getenv("ENVIRONMENT", "development") != "production" else "")
+        default_factory=lambda: (
+            os.getenv("REDIS_URL")
+            or ("redis://redis:6379/0" if os.getenv("ENVIRONMENT", "development") != "production" else "")
+        )
     )
     database_url: str | None = Field(
-        default_factory=lambda: os.getenv("DATABASE_URL")
-        or (
-            "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax"
-            if os.getenv("ENVIRONMENT", "development") != "production"
-            else ""
+        default_factory=lambda: (
+            os.getenv("DATABASE_URL")
+            or (
+                "postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax"
+                if os.getenv("ENVIRONMENT", "development") != "production"
+                else ""
+            )
         )
     )
 
@@ -112,8 +116,9 @@ class Settings(BaseSettings):
         driver scheme the async engine requires.
         """
         return _normalize_database_url(value) if value else value
-    cache_ttl_default: int = 60          # Default cache TTL in seconds.
-    cache_ttl_ai: int = 300              # Cache TTL for AI responses (longer).
+
+    cache_ttl_default: int = 60  # Default cache TTL in seconds.
+    cache_ttl_ai: int = 300  # Cache TTL for AI responses (longer).
 
     # --- CORS ----------------------------------------------------------------
     allowed_origins_raw: str | None = Field(
@@ -148,17 +153,28 @@ class Settings(BaseSettings):
     # --- API key authentication ----------------------------------------------
     api_key_header: str = "X-API-Key"
     default_admin_username: str = "admin"
-    default_admin_password: str = Field(
-        default_factory=lambda: os.getenv("DEFAULT_ADMIN_PASSWORD", "")
-    )
+    default_admin_password: str = Field(default_factory=lambda: os.getenv("DEFAULT_ADMIN_PASSWORD", ""))
+
+    # --- Default ADMIN bootstrap account --------------------------------------
+    # Used by :func:`app.db.bootstrap.ensure_default_admin` to create the first
+    # administrator on startup when none exists.  ``admin_default_password`` may
+    # be left unset; a strong random password is then generated and logged once
+    # at creation time so operators can retrieve it from the server logs.
+    admin_default_email: str = Field(default_factory=lambda: os.getenv("ADMIN_DEFAULT_EMAIL", "admin@admin.com"))
+    admin_default_password: str | None = Field(default_factory=lambda: os.getenv("ADMIN_DEFAULT_PASSWORD") or None)
+
+    # --- Admin panel -----------------------------------------------------------
+    # Name of the httpOnly cookie that stores the admin panel's session (a JWT
+    # access token issued by the regular login flow).
+    admin_cookie_name: str = Field(default_factory=lambda: os.getenv("ADMIN_COOKIE_NAME", "novaiax_admin_session"))
 
     # Master API key that bypasses per-key validation.  When set, any request
     # carrying this key is treated as fully trusted.
     master_api_key: str | None = Field(default_factory=lambda: os.getenv("MASTER_API_KEY"))
 
     # --- Rate limiting -------------------------------------------------------
-    rate_limit_default: int = 60   # Requests per minute for general endpoints.
-    rate_limit_ai: int = 10        # Stricter limit for AI endpoints.
+    rate_limit_default: int = 60  # Requests per minute for general endpoints.
+    rate_limit_ai: int = 10  # Stricter limit for AI endpoints.
 
     # Trust proxy-set client-IP headers (``X-Forwarded-For``) when
     # resolving the real client IP.  MUST only be enabled when the app sits
@@ -182,7 +198,9 @@ class Settings(BaseSettings):
 
     # --- Groq Cloud AI settings ---------------------------------------------
     groq_api_key: str | None = Field(default_factory=lambda: os.getenv("GROQ_API_KEY"))
-    groq_api_base_url: str = Field(default_factory=lambda: os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/openai/v1"))
+    groq_api_base_url: str = Field(
+        default_factory=lambda: os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/openai/v1")
+    )
     groq_api_model: str = Field(default_factory=lambda: os.getenv("GROQ_API_MODEL", "openai/gpt-oss-120b"))
     groq_api_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("GROQ_API_TIMEOUT_SECONDS", "10")))
 
@@ -258,8 +276,7 @@ def _validate_master_api_key_visibility() -> None:
 
     logger = get_logger(__name__)
     logger.warning(
-        "MASTER_API_KEY is set — any request carrying this value is fully "
-        "trusted and bypasses per-API-key validation.",
+        "MASTER_API_KEY is set — any request carrying this value is fully trusted and bypasses per-API-key validation.",
     )
 
 
@@ -277,19 +294,11 @@ def _validate_production_secrets() -> None:
     if settings.environment != "production":
         return
     if settings.secret_key == "change-me-in-production":
-        raise RuntimeError(
-            "SECRET_KEY must be set to a strong, non-default value "
-            "when ENVIRONMENT=production."
-        )
+        raise RuntimeError("SECRET_KEY must be set to a strong, non-default value when ENVIRONMENT=production.")
     if not settings.master_api_key or settings.master_api_key in _PLACEHOLDER_VALUES:
-        raise RuntimeError(
-            "MASTER_API_KEY must be set to a strong, non-placeholder value "
-            "when ENVIRONMENT=production."
-        )
+        raise RuntimeError("MASTER_API_KEY must be set to a strong, non-placeholder value when ENVIRONMENT=production.")
     if not settings.groq_api_key:
-        raise RuntimeError(
-            "GROQ_API_KEY must be set when ENVIRONMENT=production."
-        )
+        raise RuntimeError("GROQ_API_KEY must be set when ENVIRONMENT=production.")
     if not settings.database_url:
         raise RuntimeError(
             "DATABASE_URL must be set when ENVIRONMENT=production. "

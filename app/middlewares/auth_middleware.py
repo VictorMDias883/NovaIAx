@@ -11,6 +11,10 @@ Public paths (no authentication required):
     - ``/api/v1/auth`` and anything under it
     - ``/docs`` and ``/openapi`` (Swagger UI and OpenAPI schema)
     - ``/health`` (liveness probe)
+    - ``/admin`` and anything under it (the admin panel authenticates
+      itself with its own httpOnly session cookie — see
+      :mod:`app.api.admin`).  Every admin route enforces authorization
+      internally, so the panel is not left open by this exemption.
 
 For all other paths, the middleware calls :func:`get_current_user`
 to validate the request's credentials (JWT or API key).  If
@@ -39,6 +43,7 @@ _PUBLIC_PATH_PREFIXES = [
     re.compile(r"^/docs"),
     re.compile(r"^/openapi"),
     re.compile(r"^/health$"),
+    re.compile(r"^/admin"),
 ]
 
 

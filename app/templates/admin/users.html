@@ -1,0 +1,71 @@
+{% extends "admin/base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<h1>Users</h1>
+
+{% if message %}
+  <div class="flash flash-ok">{{ message }}</div>
+{% endif %}
+{% if error %}
+  <div class="flash flash-error">{{ error }}</div>
+{% endif %}
+
+{% if users %}
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Name</th>
+      <th>Email</th>
+      <th>Role</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for user in users %}
+    <tr>
+      <td>{{ user.id }}</td>
+      <td>{{ user.full_name }}</td>
+      <td>{{ user.email }}</td>
+      <td>
+        <span class="role-badge role-{{ 'admin' if user.role == 'ADMIN' else 'user' }}">
+          {{ user.role }}
+        </span>
+      </td>
+      <td>
+        <div class="actions-cell">
+          {% if user.role == 'ADMIN' %}
+            <form method="post" action="/admin/users/{{ user.id }}/demote" class="inline">
+              <button type="submit" class="btn btn-sm">Demote</button>
+            </form>
+          {% else %}
+            <form method="post" action="/admin/users/{{ user.id }}/promote" class="inline">
+              <button type="submit" class="btn btn-sm">Promote</button>
+            </form>
+          {% endif %}
+          {% if user.id|string != admin.id %}
+            <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline"
+                  onsubmit="return confirm('Delete user {{ user.email }}?');">
+              <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+            </form>
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="pagination">
+  {% if page > 1 %}
+    <a href="/admin/users?page={{ page - 1 }}">Previous</a>
+  {% endif %}
+  <span>Page {{ page }} of {{ ((total + limit - 1) // limit) or 1 }} ({{ total }} users)</span>
+  {% if page * limit < total %}
+    <a href="/admin/users?page={{ page + 1 }}">Next</a>
+  {% endif %}
+</div>
+{% else %}
+<p>No users found.</p>
+{% endif %}
+{% endblock %}

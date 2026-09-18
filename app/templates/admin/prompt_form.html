@@ -1,0 +1,20 @@
+{% extends "admin/base.html" %}
+{% block title %}Edit System Prompt{% endblock %}
+{% block content %}
+<h1>Edit system prompt</h1>
+
+<form method="post" action="/admin/system-prompts/{{ prompt.id }}">
+  <div class="form-group">
+    <label for="tipo">Type</label>
+    <input type="text" id="tipo" name="tipo" value="{{ prompt.tipo }}" required maxlength="100">
+  </div>
+  <div class="form-group">
+    <label for="system_prompt">Prompt</label>
+    <textarea id="system_prompt" name="system_prompt" required maxlength="5000">{{ prompt.system_prompt }}</textarea>
+  </div>
+  <div class="actions">
+    <button type="submit" class="btn">Save</button>
+    <a class="btn" href="/admin/system-prompts">Cancel</a>
+  </div>
+</form>
+{% endblock %}
