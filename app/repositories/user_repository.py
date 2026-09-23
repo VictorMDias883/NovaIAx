@@ -7,7 +7,6 @@ class, the service layer remains free of ORM-specific code and can be
 unit-tested with a mock repository.
 """
 
-
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,6 +78,20 @@ class UserRepository:
         if user is None:
             return None
         user.role = role
+        await self.session.flush()
+        await self.session.refresh(user)
+        return user
+
+    async def update_password_hash(self, id: int, password_hash: str) -> User | None:
+        """Replace a user's password hash and return the updated user.
+
+        The row is locked for update so concurrent writes cannot be lost.
+        Returns ``None`` when no user has the given ``id``.
+        """
+        user = await self.get_by_id(id, for_update=True)
+        if user is None:
+            return None
+        user.password_hash = password_hash
         await self.session.flush()
         await self.session.refresh(user)
         return user

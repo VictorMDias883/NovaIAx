@@ -20,6 +20,7 @@ from app.core.security import pwd_context
 from app.db.bootstrap import ensure_default_admin
 from app.db.session import SessionLocal
 from app.models.user import User, UserRole
+from app.repositories.user_repository import UserRepository
 from sqlalchemy import delete, func, select
 
 
@@ -139,9 +140,142 @@ async def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     """``ADMIN_DEFAULT_*`` fall back to ``admin@admin.com`` and a generated password."""
     monkeypatch.delenv("ADMIN_DEFAULT_EMAIL", raising=False)
     monkeypatch.delenv("ADMIN_DEFAULT_PASSWORD", raising=False)
+    monkeypatch.delenv("DEFAULT_ADMIN_PASSWORD", raising=False)
 
     # ``_env_file=None`` keeps the assertion independent of a local ``.env``
     # (which may legitimately pin an ``ADMIN_DEFAULT_EMAIL``).
     settings = Settings(_env_file=None)
     assert settings.admin_default_email == "admin@admin.com"
     assert settings.admin_default_password is None
+
+
+async def test_accepts_legacy_default_admin_password_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The legacy ``DEFAULT_ADMIN_PASSWORD`` env var still feeds the bootstrap field."""
+    monkeypatch.delenv("ADMIN_DEFAULT_PASSWORD", raising=False)
+    monkeypatch.setenv("DEFAULT_ADMIN_PASSWORD", "LegacyPass!42")
+
+    settings = Settings(_env_file=None)
+    assert settings.admin_default_password == "LegacyPass!42"
+
+
+@pytest.mark.asyncio
+async def test_resets_admin_password_to_configured_value(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, clean_users: None
+) -> None:
+    import app.db.bootstrap as bootstrap_module
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "get_settings",
+        lambda: Settings(admin_default_email="admin@example.com", admin_default_password=None),
+    )
+    await ensure_default_admin()
+    await _all_users()
+    async with SessionLocal() as session:
+        result = await session.execute(select(User).where(User.email == "admin@example.com"))
+        before = result.scalar_one()
+        assert pwd_context.verify("garbage-not-the-password", before.password_hash) is False
+        old_hash = before.password_hash
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "get_settings",
+        lambda: Settings(
+            admin_default_email="admin@example.com",
+            admin_default_password="O5hZO4NgL8qE9UMXtdTO",
+        ),
+    )
+
+    caplog.set_level(logging.WARNING)
+    await ensure_default_admin()
+
+    users = await _all_users()
+    assert len(users) == 1
+    admin = users[0]
+    assert admin.email == "admin@example.com"
+    assert admin.role == UserRole.ADMIN
+    assert pwd_context.verify("O5hZO4NgL8qE9UMXtdTO", admin.password_hash)
+    assert admin.password_hash != old_hash
+
+    reset_warnings = [r for r in caplog.records if r.getMessage() and "reset" in str(r.getMessage()).lower()]
+    assert len(reset_warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_does_not_reset_when_password_matches(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, clean_users: None
+) -> None:
+    import app.db.bootstrap as bootstrap_module
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "get_settings",
+        lambda: Settings(
+            admin_default_email="admin@example.com",
+            admin_default_password="StablePass!42",
+        ),
+    )
+    await ensure_default_admin()
+
+    async with SessionLocal() as session:
+        result = await session.execute(select(User).where(User.email == "admin@example.com"))
+        old_hash = result.scalar_one().password_hash
+
+    caplog.set_level(logging.WARNING)
+    await ensure_default_admin()
+
+    users = await _all_users()
+    assert len(users) == 1
+    assert users[0].password_hash == old_hash
+    assert pwd_context.verify("StablePass!42", users[0].password_hash)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@pytest.mark.asyncio
+async def test_does_not_touch_other_admins(monkeypatch: pytest.MonkeyPatch, clean_users: None) -> None:
+    import app.db.bootstrap as bootstrap_module
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "get_settings",
+        lambda: Settings(admin_default_email="ops@example.com", admin_default_password=None),
+    )
+    await ensure_default_admin()
+
+    async with SessionLocal() as session:
+        repo = UserRepository(session)
+        async with session.begin():
+            await repo.create(
+                full_name="Other Admin",
+                email="other-admin@example.com",
+                password_hash=pwd_context.hash("KeepThisHash!42"),
+                role=UserRole.ADMIN,
+                commit=False,
+            )
+        async with session.begin():
+            result = await session.execute(select(User).where(User.email == "other-admin@example.com"))
+            other_hash = result.scalar_one().password_hash
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "get_settings",
+        lambda: Settings(
+            admin_default_email="ops@example.com",
+            admin_default_password="SyncedPass!42",
+        ),
+    )
+    await ensure_default_admin()
+
+    async with SessionLocal() as session:
+        result = await session.execute(select(User).where(User.email == "ops@example.com"))
+        ops = result.scalar_one()
+        result = await session.execute(select(User).where(User.email == "other-admin@example.com"))
+        other_after = result.scalar_one()
+
+    assert pwd_context.verify("SyncedPass!42", ops.password_hash)
+    assert other_after.password_hash == other_hash
+    assert pwd_context.verify("KeepThisHash!42", other_after.password_hash)
+
+    async with SessionLocal() as session:
+        result = await session.execute(select(func.count()).select_from(User).where(User.role == UserRole.ADMIN))
+        assert int(result.scalar_one()) == 2

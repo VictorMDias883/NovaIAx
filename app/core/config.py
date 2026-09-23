@@ -166,7 +166,12 @@ class Settings(BaseSettings):
     # be left unset; a strong random password is then generated and logged once
     # at creation time so operators can retrieve it from the server logs.
     admin_default_email: str = Field(default_factory=lambda: os.getenv("ADMIN_DEFAULT_EMAIL", "admin@admin.com"))
-    admin_default_password: str | None = Field(default_factory=lambda: os.getenv("ADMIN_DEFAULT_PASSWORD") or None)
+    # ``DEFAULT_ADMIN_PASSWORD`` is the legacy name still present in some
+    # environments; honor it so those deployments keep using their configured
+    # password instead of silently generating a random one at first startup.
+    admin_default_password: str | None = Field(
+        default_factory=lambda: os.getenv("ADMIN_DEFAULT_PASSWORD") or os.getenv("DEFAULT_ADMIN_PASSWORD") or None
+    )
 
     # --- Admin panel -----------------------------------------------------------
     # Name of the httpOnly cookie that stores the admin panel's session (a JWT
@@ -239,9 +244,7 @@ class Settings(BaseSettings):
     )
     groq_max_concurrency: int = Field(default_factory=lambda: int(os.getenv("GROQ_MAX_CONCURRENCY", "2")))
     groq_max_attempts: int = Field(default_factory=lambda: int(os.getenv("GROQ_MAX_ATTEMPTS", "1")))
-    groq_max_output_tokens: int = Field(
-        default_factory=lambda: int(os.getenv("GROQ_MAX_OUTPUT_TOKENS", "1024"))
-    )
+    groq_max_output_tokens: int = Field(default_factory=lambda: int(os.getenv("GROQ_MAX_OUTPUT_TOKENS", "1024")))
 
     # Pydantic-settings configuration: read from ``.env`` file, case-insensitive.
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
