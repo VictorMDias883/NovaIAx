@@ -31,6 +31,9 @@ _MESSAGE_OVERHEAD_TOKENS = 4
 _CHARS_PER_TOKEN = 4
 
 _ALLOWED_ROLES = {"user", "assistant"}
+#: Namespace prefix for all conversation-history keys (shared with the
+#: per-user cache-flush operation, which matches ``{KEY_PREFIX}*:{user_id}``).
+KEY_PREFIX = "conversation:"
 
 
 def _estimate_tokens(messages: list[dict[str, str]]) -> int:
@@ -56,7 +59,12 @@ class ConversationCache:
     @staticmethod
     def _key(agent: str, user_id: int) -> str:
         """Return the cache key for a given agent and user."""
-        return f"conversation:{agent}:{user_id}"
+        return f"{KEY_PREFIX}{agent}:{user_id}"
+
+    @staticmethod
+    def key_pattern(user_id: int) -> str:
+        """Return a glob matching every conversation key belonging to a user."""
+        return f"{KEY_PREFIX}*:{user_id}"
 
     async def get_messages(self, agent: str, user_id: int) -> list[dict[str, str]]:
         """Return the stored history for a conversation, or ``[]`` if empty.

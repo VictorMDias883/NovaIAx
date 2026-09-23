@@ -36,6 +36,7 @@ from app.cache.redis_client import RedisClient
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.network import get_client_ip
+from app.models.user import UserRole
 
 # Create a sub-router with the ``/proxy`` prefix and ``proxy`` tag.
 router = APIRouter(prefix="/proxy", tags=["proxy"])
@@ -43,6 +44,12 @@ router = APIRouter(prefix="/proxy", tags=["proxy"])
 # Module-level logger and settings (loaded once at import time).
 logger = get_logger(__name__)
 settings = get_settings()
+
+#: Prefix of the per-user set that indexes which ``cache:`` keys belong to a
+#: user.  The cache keys themselves embed a SHA-256 digest of the caller
+#: identity, so they cannot be enumerated by pattern — the index makes the
+#: per-user cache flushable.
+PROXY_CACHE_INDEX_PREFIX = "proxy_cache:index:"
 
 
 async def _cache_key(path: str, params: str, method: str, identity: str) -> str:
@@ -81,6 +88,11 @@ def _identity_for_cache(request: Request, current_user: dict[str, Any]) -> str:
     if api_key:
         identity = f"{identity}:{api_key}"
     return identity
+
+
+def _cache_index_key(user_id: str) -> str:
+    """Return the per-user set key that indexes the caller's proxy cache entries."""
+    return f"{PROXY_CACHE_INDEX_PREFIX}{user_id}"
 
 
 # Hop-by-hop and encoding headers that must not be replayed from a cache
@@ -246,5 +258,15 @@ async def proxy_request(
             _cache_serialise(resp.status_code, resp.headers, response_body),
             ex=settings.cache_ttl_default,
         )
+        # Index the entry under the caller so the per-user cache flush can
+        # find and delete it later (the cache key itself embeds a hashed
+        # identity and is not enumerable by pattern).  API-key callers are
+        # skipped: their identity is a shared sentinel and transient.
+        if current_user.get("role") != UserRole.SERVICE.value:
+            user_id = str(current_user.get("id", ""))
+            if user_id:
+                index_key = _cache_index_key(user_id)
+                await redis_client.sadd(index_key, cache_key)
+                await redis_client.expire(index_key, settings.cache_ttl_default)
 
     return response

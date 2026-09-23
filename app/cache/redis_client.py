@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - fallback for environments without redi
     redis_async = None  # type: ignore[assignment]
 
 import asyncio
+import fnmatch
 import time
 
 from app.core.config import Settings, get_settings
@@ -40,6 +41,11 @@ _REDIS_RETRY_COOLDOWN_SECONDS = 30.0
 # (``time.monotonic``), shared across all client instances.
 _last_redis_attempt: float | None = None
 
+# Alias of the builtin ``set`` generic.  mypy resolves a bare ``set`` inside
+# a class body to the class's own ``set`` *method*, so return annotations in
+# these classes would otherwise fail with "set is not valid as a type".
+_Set = set
+
 
 class InMemoryStore:
     """A minimal in-memory key-value store that mimics a subset of Redis.
@@ -49,6 +55,10 @@ class InMemoryStore:
           actually enforced in this simplified implementation).
         - Sorted-set operations (``zadd``, ``zremrangebyscore``,
           ``zcard``) used by the rate-limiting middleware.
+        - Set operations (``sadd``, ``smembers``, ``srem``) used to index
+          per-user cache keys.
+        - ``keys(pattern)`` and a no-op ``expire`` for cache-flush and
+          compatibility.
 
     Note: This store is **not** shared across processes or workers.
     It is intended for development and testing only.
@@ -59,6 +69,8 @@ class InMemoryStore:
         self._data: dict[str, Any] = {}
         # Sorted-set simulation: key → {member: score}.
         self._sorted_sets: dict[str, dict[str, float]] = {}
+        # Set simulation: key → {member}.
+        self._sets: dict[str, set[str]] = {}
 
     async def get(self, key: str) -> str | None:
         """Retrieve a value by key, or ``None`` if the key does not exist."""
@@ -70,8 +82,21 @@ class InMemoryStore:
         self._data[key] = value
 
     async def delete(self, key: str) -> None:
-        """Remove a key from the store.  No-op if the key does not exist."""
+        """Remove a key from the store (strings, sets and sorted sets).
+
+        No-op if the key does not exist.  Mirrors real Redis ``DEL``, which
+        removes every data structure stored under the key.
+        """
         self._data.pop(key, None)
+        self._sets.pop(key, None)
+        self._sorted_sets.pop(key, None)
+
+    async def keys(self, pattern: str) -> list[str]:
+        """Return every string key matching a glob pattern."""
+        return [key for key in self._data if fnmatch.fnmatchcase(key, pattern)]
+
+    async def expire(self, key: str, seconds: int) -> None:
+        """Compatibility no-op (real Redis enforces TTLs; memory does not)."""
 
     async def zadd(self, key: str, mapping: dict[str, float]) -> None:
         """Add members to a sorted set, or update their scores if they exist."""
@@ -86,6 +111,20 @@ class InMemoryStore:
     async def zcard(self, key: str) -> int:
         """Return the number of members in a sorted set."""
         return len(self._sorted_sets.get(key, {}))
+
+    async def sadd(self, key: str, *values: str) -> None:
+        """Add members to a set, creating it if needed."""
+        self._sets.setdefault(key, set()).update(values)
+
+    async def smembers(self, key: str) -> _Set[str]:
+        """Return the members of a set (empty when the key does not exist)."""
+        return set(self._sets.get(key, set()))
+
+    async def srem(self, key: str, *values: str) -> None:
+        """Remove members from a set."""
+        members = self._sets.get(key)
+        if members:
+            members.difference_update(values)
 
 
 class RedisClient:
@@ -132,6 +171,7 @@ class RedisClient:
         """
         self._memory_store._data.clear()
         self._memory_store._sorted_sets.clear()
+        self._memory_store._sets.clear()
 
     @classmethod
     def reset_all_memory_stores(cls) -> None:
@@ -213,6 +253,30 @@ class RedisClient:
     async def delete(self, key: str) -> None:
         """Delete a key from the store."""
         await self._run("delete", key)
+
+    async def keys(self, pattern: str) -> list[str]:
+        """Return every key matching a glob pattern (e.g. ``conversation:*:5``).
+
+        Intended for the low-frequency per-user cache-flush operation, not for
+        hot request paths.
+        """
+        return await self._run("keys", pattern)
+
+    async def expire(self, key: str, seconds: int) -> None:
+        """Set a TTL on a key (no-op for the in-memory fallback)."""
+        await self._run("expire", key, seconds)
+
+    async def sadd(self, key: str, *values: str) -> None:
+        """Add members to a set, creating it if needed."""
+        await self._run("sadd", key, *values)
+
+    async def smembers(self, key: str) -> _Set[str]:
+        """Return the members of a set."""
+        return await self._run("smembers", key)
+
+    async def srem(self, key: str, *values: str) -> None:
+        """Remove members from a set."""
+        await self._run("srem", key, *values)
 
     async def zadd(self, key: str, mapping: dict[str, float]) -> None:
         """Add members to a sorted set."""

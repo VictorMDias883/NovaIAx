@@ -16,12 +16,14 @@ Architecture:
             ├── user_router            (prefix="/users",             tags=["users"])
             ├── proxy_router           (prefix="/proxy",             tags=["proxy"])
             ├── system_prompt_router   (prefix="/system-prompts",    tags=["system-prompts"])
-            └── chat_router            (prefix="/ai",                tags=["ai"])
+            ├── chat_router            (prefix="/ai",                tags=["ai"])
+            └── cache_router           (prefix="/cache",             tags=["cache"])
 """
 
 from fastapi import APIRouter
 
 from app.api.v1.auth import router as auth_router
+from app.api.v1.cache_router import router as cache_router
 from app.api.v1.chat_router import router as chat_router
 from app.api.v1.general_agent_router import router as general_agent_router
 from app.api.v1.objective_assistant_router import router as objective_assistant_router
@@ -38,6 +40,7 @@ router = APIRouter()
 # Include each sub-router.  The sub-routers' own prefixes are appended
 # to the ``/api/v1`` prefix set in ``main.py``.
 router.include_router(auth_router)
+router.include_router(cache_router)
 router.include_router(objective_router)
 router.include_router(objective_assistant_router)
 router.include_router(roadmap_day_router)

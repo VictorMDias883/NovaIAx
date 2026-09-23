@@ -179,7 +179,15 @@ class Settings(BaseSettings):
 
     # --- Rate limiting -------------------------------------------------------
     rate_limit_default: int = 60  # Requests per minute for general endpoints.
-    rate_limit_ai: int = 10  # Stricter limit for AI endpoints.
+    # Stricter limit for AI endpoints.  NOTE: this is enforced *per client IP*
+    # (per user behind a trusted proxy), so it CANNOT protect the shared Groq
+    # key by itself — with several users it is trivially passed in aggregate.
+    # The defence against exceeding Groq's *organization-wide* quota is the
+    # client-side pacer in :mod:`app.clients.ai_client` (see the ``groq_*``
+    # settings below), which caps requests AND tokens per minute for the whole
+    # process.  This per-IP value is kept below the provider's per-minute
+    # request limit (30 RPM) with clear margin.
+    rate_limit_ai: int = 8
 
     # Trust proxy-set client-IP headers (``X-Forwarded-For``) when
     # resolving the real client IP.  MUST only be enabled when the app sits
@@ -208,6 +216,32 @@ class Settings(BaseSettings):
     )
     groq_api_model: str = Field(default_factory=lambda: os.getenv("GROQ_API_MODEL", "openai/gpt-oss-120b"))
     groq_api_timeout_seconds: int = Field(default_factory=lambda: int(os.getenv("GROQ_API_TIMEOUT_SECONDS", "10")))
+
+    # --- Groq Cloud free-tier guardrails -------------------------------------
+    # The free tier for ``openai/gpt-oss-120b`` (the default model) allows
+    # **30 requests/min, 1K requests/day, 8K tokens/min and 200K tokens/day,
+    # enforced per ORGANIZATION** — i.e. the budget is shared across every API
+    # key and every worker/process on the account.  A 429 must never be escaped
+    # by quick retries: every attempt, successful or not, counts towards the
+    # org quota, and the per-minute window resets at most once a minute, so a
+    # short backoff almost always re-hits the same exhausted window.
+    #
+    # The defaults below keep this process at or below the org budget *with
+    # margin*:
+    #   * requests: 20/min (org 30)   * tokens: 6K/min (org 8K)
+    #   * concurrency: 2 (bursts queue instead of piling up)
+    #   * on-429 retries: 0 (default) — no quota-multiplying silent retries.
+    # These are per-process ceilings; a multi-worker deployment shares the
+    # org budget, so each worker's margin is its share.
+    groq_rate_limit_rpm: int = Field(default_factory=lambda: int(os.getenv("GROQ_RATE_LIMIT_RPM", "20")))
+    groq_token_budget_per_minute: int = Field(
+        default_factory=lambda: int(os.getenv("GROQ_TOKEN_BUDGET_PER_MINUTE", "6000"))
+    )
+    groq_max_concurrency: int = Field(default_factory=lambda: int(os.getenv("GROQ_MAX_CONCURRENCY", "2")))
+    groq_max_attempts: int = Field(default_factory=lambda: int(os.getenv("GROQ_MAX_ATTEMPTS", "1")))
+    groq_max_output_tokens: int = Field(
+        default_factory=lambda: int(os.getenv("GROQ_MAX_OUTPUT_TOKENS", "1024"))
+    )
 
     # Pydantic-settings configuration: read from ``.env`` file, case-insensitive.
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)

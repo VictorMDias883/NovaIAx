@@ -57,17 +57,41 @@ Sliding 60-second window, keyed by client IP, enforced by
 | Bucket | Limit | Applies to paths containing |
 |--------|-------|------------------------------|
 | Default | 60 req/min | everything |
-| AI (strict) | 10 req/min | `/ai/`, `/agents/general`, `/objectives/assistant`, `/objectives/register`, or `/roadmap/renew` (every endpoint that makes an AI-provider call: `POST /api/v1/ai/chat`, `/agents/general/chat`, `/objectives/assistant`, `/objectives/register`, `/objectives/{id}/roadmap/renew`, and `/api/v1/proxy/ai/...`) |
+| AI (strict) | 8 req/min | `/ai/`, `/agents/general`, `/objectives/assistant`, `/objectives/register`, or `/roadmap/renew` (every endpoint that makes an AI-provider call: `POST /api/v1/ai/chat`, `/agents/general/chat`, `/objectives/assistant`, `/objectives/register`, `/objectives/{id}/roadmap/renew`, and `/api/v1/proxy/ai/...`) |
 
 On exceeding the limit:
 
 - **429** — `{"detail": "Too Many Requests"}` with `X-RateLimit-Limit`,
   `X-RateLimit-Remaining` and `Retry-After: 60` headers.
 - If Redis is unreachable the limiter falls back to permissive (does not block).
-- AI-provider throttling: a `429` from the AI provider (Groq) is retried
-  server-side with exponential backoff, honoring Groq's `Retry-After` header,
-  up to a few attempts. Persistent throttling surfaces to the caller as a
-  `429` with a `Retry-After` header instead of a generic `502`.
+
+### AI-provider (Groq) guardrails
+
+Groq's free tier is shared across the *whole organization* — every key and
+process counts toward the same buckets (e.g. `openai/gpt-oss-120b`:
+**30 req/min / 1K req/day / 8K tokens/min / 200K tokens/day**), and **every
+attempt, even a failed one, consumes quota**. To stay inside those limits:
+
+- A **process-wide pacer** queues outgoing Groq traffic (default
+  `groq_rate_limit_rpm=20`, `groq_token_budget_per_minute=6000`) and a
+  **concurrency semaphore** (`groq_max_concurrency=2`) prevents bursts; a
+  request that would exceed the budget waits instead of firing.
+- **No automatic retries by default** (`groq_max_attempts=1`) — an internal
+  retry loop cannot outlast the provider's per-minute window and only
+  multiplies the org quota spent. When retries are explicitly enabled
+  (`GROQ_MAX_ATTEMPTS>1`) they use exponential backoff and honor Groq's
+  `Retry-After` header.
+- Responses are capped at `groq_max_output_tokens=1024` tokens.
+- Every outgoing call is logged (`groq_request_start`/`groq_request_end`
+  with timestamp, request id, model, attempt, estimated tokens and status).
+- A provider throttling surfaces to the caller as a **`429`** whose `detail`
+  includes the exact limit from Groq's error body, plus a `Retry-After`
+  header (mirrored from `x-ratelimit-reset-*`), instead of a generic `502`.
+
+Defaults can be tuned via `GROQ_RATE_LIMIT_RPM`, `GROQ_TOKEN_BUDGET_PER_MINUTE`,
+`GROQ_MAX_CONCURRENCY`, `GROQ_MAX_ATTEMPTS` and `GROQ_MAX_OUTPUT_TOKENS`.
+Note: the pacer is per-process, so scale out (more workers) only if the org
+limits — and shared REDIS — can absorb the aggregate volume.
 
 ### Error response shape
 
@@ -569,7 +593,49 @@ downstream path).
 
 ---
 
-## 8. Admin
+## 8. Cache management
+
+Per-user cache controls. Admin/external tooling can clear a user's cached
+data (AI conversation histories and their reverse-proxy response-cache
+entries) to force a fresh state without a full Redis flush.
+
+### 8.1 POST `/api/v1/cache/flush`
+
+Clears **only the authenticated user's** cached keys:
+
+- conversation histories: `conversation:<agent>:<user_id>` for every
+  assistant (general agent, objective assistant),
+- reverse-proxy response-cache entries tracked under
+  `proxy_cache:index:<user_id>` (their keys hash the caller's identity and
+  cannot be matched by pattern).
+
+Other users' data and global state are never touched (rate-limit counters,
+the token denylist and the shared `ai_response` prompt-digest cache persist).
+API-key (`SERVICE`) identities get `403` — their cache is keyed by key-hash,
+not a user id, so there is nothing user-scoped to flush.
+
+**Required headers:** auth (JWT only).
+
+**Success — `200`**
+
+```json
+{
+  "status": "ok",
+  "user_id": 3,
+  "cleared": { "conversations_cleared": 2, "proxy_entries_cleared": 5 }
+}
+```
+
+**Errors**
+
+| Status | JSON | When |
+|--------|------|------|
+| 401 | `{"detail": "Authentication required"}` | No credentials |
+| 403 | `{"detail": "API-key authentication cannot be used on this endpoint"}` | `X-API-Key` identity |
+
+---
+
+## 9. Admin
 
 Two surfaces:
 
