@@ -12,6 +12,7 @@
 
 <h2>New prompt</h2>
 <form method="post" action="/admin/system-prompts">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="form-group">
     <label for="tipo">Type</label>
     <input type="text" id="tipo" name="tipo" required maxlength="100">
@@ -45,6 +46,7 @@
           <a class="btn btn-sm" href="/admin/system-prompts/{{ prompt.id }}/edit">Edit</a>
           <form method="post" action="/admin/system-prompts/{{ prompt.id }}/delete" class="inline"
                 onsubmit="return confirm('Delete this system prompt?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn btn-sm btn-danger">Delete</button>
           </form>
         </div>

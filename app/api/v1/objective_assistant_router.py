@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_redis_client, get_session
+from app.api.deps import get_redis_client, get_session, require_db_user
 from app.cache.conversation_cache import ConversationCache
 from app.cache.redis_client import RedisClient
 from app.clients.ai_client import GroqAIClient
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/objectives/assistant", tags=["objectives"])
 @router.post("", response_model=ObjectiveAssistantResponse)
 async def objective_assistant(
     payload: ObjectiveAssistantRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
     redis_client: RedisClient = Depends(get_redis_client),
 ) -> ObjectiveAssistantResponse:

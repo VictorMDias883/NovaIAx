@@ -18,13 +18,27 @@ from typing import Any
 # is not installed, set ``redis_async`` to ``None`` so that the
 # :class:`RedisClient` can fall back to the in-memory store.
 try:
-    import redis.asyncio as redis_async  # type: ignore
+    import redis.asyncio as redis_async
 except ImportError:  # pragma: no cover - fallback for environments without redis package
-    redis_async = None
+    redis_async = None  # type: ignore[assignment]
 
 import asyncio
+import time
 
 from app.core.config import Settings, get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+# How long to wait after a failed connection attempt before trying Redis
+# again.  Prevents a dead Redis server from being hammered on every request,
+# while still letting a *recovering* Redis be re-discovered on the next call
+# (the fallback is never permanently pinned).
+_REDIS_RETRY_COOLDOWN_SECONDS = 30.0
+
+# Module-level timestamp of the last attempted Redis connection
+# (``time.monotonic``), shared across all client instances.
+_last_redis_attempt: float | None = None
 
 
 class InMemoryStore:
@@ -81,9 +95,16 @@ class RedisClient:
     connection fails (or the ``redis`` package is not installed), it
     transparently switches to an :class:`InMemoryStore`.
 
+    Unlike a naive one-shot fallback, a *failed* Redis is re-tried on a
+    later call (subject to a short cooldown) so that a Redis server that
+    starts after the app boots is eventually picked up again — the
+    in-memory store is never permanently pinned.
+
     All public methods (``get``, ``set``, ``delete``, ``zadd``,
     ``zremrangebyscore``, ``zcard``) delegate to the underlying client,
     which may be either a real Redis connection or the in-memory store.
+    If the real client fails mid-operation, the operation is retried
+    against the in-memory store so live traffic is not interrupted.
     """
 
     # Registry of live instances, so the fallback state can be reset between
@@ -118,67 +139,89 @@ class RedisClient:
         for instance in cls._instances:
             instance.reset_memory_store()
 
+    def _using_memory(self) -> bool:
+        """Return ``True`` when the current backend is the in-memory store."""
+        return self._client is self._memory_store or self._client is None
+
     async def get_client(self) -> Any:
         """Return the underlying Redis (or in-memory) client.
 
-        On the first call, this method attempts to create a real Redis
-        connection and ping it.  If that fails for any reason, it falls
-        back to the :class:`InMemoryStore`.  The result is cached so
-        subsequent calls do not repeat the connection logic.
+        The connection is attempted lazily.  When Redis is reachable the
+        connection is reused for every subsequent call.  When it is not,
+        the in-memory store is used and Redis is re-tried at most once
+        per cooldown window (see ``_REDIS_RETRY_COOLDOWN_SECONDS``).
         """
-        if self._client is None:
-            if redis_async is None:
-                # The redis package is not installed — use in-memory store.
-                self._client = self._memory_store
-            else:
-                try:
-                    # Create the redis client and perform a short ping to ensure
-                    # the server is reachable. Use a small timeout so tests do
-                    # not hang if Redis is not available or unresponsive.
-                    self._client = redis_async.from_url(self.settings.redis_url, decode_responses=True)
-                    try:
-                        await asyncio.wait_for(self._client.ping(), timeout=0.5)
-                    except Exception:
-                        # Ping failed or timed out — fall back to in-memory store.
-                        self._client = self._memory_store
-                except Exception:
-                    # Any error creating the client falls back to in-memory.
-                    self._client = self._memory_store
+        # A live Redis client is reused as-is.
+        if self._client is not None and not self._using_memory():
+            return self._client
+
+        # On the in-memory fallback: re-attempt Redis, but respect the
+        # cooldown so an unavailable server is not probed on every request.
+        global _last_redis_attempt
+        tries = None if redis_async is None else _last_redis_attempt
+        if redis_async is None:
+            self._client = self._memory_store
+            return self._client
+        now = time.monotonic()
+        if tries is not None and now - tries < _REDIS_RETRY_COOLDOWN_SECONDS:
+            self._client = self._memory_store
+            return self._client
+
+        _last_redis_attempt = now
+        try:
+            candidate = redis_async.from_url(self.settings.redis_url, decode_responses=True)
+            # A short ping ensures the server is reachable so tests do not
+            # hang if Redis is unavailable or unresponsive.
+            await asyncio.wait_for(candidate.ping(), timeout=0.5)
+        except Exception:
+            logger.warning("Redis unavailable - falling back to in-memory store")
+            self._client = self._memory_store
+            return self._client
+        self._client = candidate
         return self._client
+
+    async def _run(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        """Execute an operation, retrying once against memory on a real-client failure.
+
+        ``ex`` is only meaningful for real Redis; the in-memory store uses
+        ``set(key, value)``.
+        """
+        client = await self.get_client()
+        if self._using_memory():
+            impl = self._memory_store
+            if method == "set":
+                kwargs = {k: v for k, v in kwargs.items() if k != "ex"}
+            return await getattr(impl, method)(*args, **kwargs)
+        try:
+            return await getattr(client, method)(*args, **kwargs)
+        except Exception:
+            logger.exception("Redis operation failed - retrying with in-memory store (%s)", method)
+            self._client = self._memory_store
+            impl = self._memory_store
+            if method == "set":
+                kwargs = {k: v for k, v in kwargs.items() if k != "ex"}
+            return await getattr(impl, method)(*args, **kwargs)
 
     async def get(self, key: str) -> str | None:
         """Retrieve a string value by key."""
-        client = await self.get_client()
-        return await client.get(key)
+        return await self._run("get", key)
 
     async def set(self, key: str, value: str, ex: int | None = None) -> None:
-        """Store a string value with an optional TTL (``ex`` in seconds).
-
-        The ``hasattr`` check accommodates the :class:`InMemoryStore`,
-        which does not support the ``ex`` parameter.
-        """
-        client = await self.get_client()
-        if hasattr(client, "set"):
-            await client.set(key, value, ex=ex)
-        else:
-            await client.set(key, value)
+        """Store a string value with an optional TTL (``ex`` in seconds)."""
+        await self._run("set", key, value, ex=ex)
 
     async def delete(self, key: str) -> None:
         """Delete a key from the store."""
-        client = await self.get_client()
-        await client.delete(key)
+        await self._run("delete", key)
 
     async def zadd(self, key: str, mapping: dict[str, float]) -> None:
         """Add members to a sorted set."""
-        client = await self.get_client()
-        await client.zadd(key, mapping)
+        await self._run("zadd", key, mapping)
 
     async def zremrangebyscore(self, key: str, min_score: float, max_score: float) -> None:
         """Remove sorted-set members whose scores fall within ``[min_score, max_score]``."""
-        client = await self.get_client()
-        await client.zremrangebyscore(key, min_score, max_score)
+        await self._run("zremrangebyscore", key, min_score, max_score)
 
     async def zcard(self, key: str) -> int:
         """Return the cardinality (number of members) of a sorted set."""
-        client = await self.get_client()
-        return await client.zcard(key)
+        return await self._run("zcard", key)

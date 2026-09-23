@@ -44,11 +44,12 @@ class ObjectiveAssistantService:
         self.session = session
         self.ai_client = ai_client
         self.conversation_cache = conversation_cache or ConversationCache()
-        self.objective_service = objective_service
-        if self.objective_service is None:
+        if objective_service is None:
             from app.services.objective_service import ObjectiveService
 
             self.objective_service = ObjectiveService(session, ai_client=self.ai_client)
+        else:
+            self.objective_service = objective_service
 
     async def create_completion(self, command: ObjectiveAssistantCommand, user_id: int) -> dict[str, str]:
         """Handle one turn of the objective assistant workflow.

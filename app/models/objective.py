@@ -7,7 +7,7 @@ Each objective belongs to exactly one :class:`User`.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String, Text
@@ -38,7 +38,7 @@ class Objective(Base):
         roadmap_updated_at: Timestamp of the last roadmap generation.
             Used to enforce the 7-day renewal window.
         created_at: Timestamp of when the objective was created.
-            Defaults to ``datetime.utcnow()`` at the application level.
+            Defaults to ``datetime.now(UTC)`` at the application level.
         user_id: Foreign key referencing ``users.id``.  Establishes
             the many-to-one relationship to :class:`User`.
         user: The owning :class:`User` instance (loaded via the
@@ -53,18 +53,18 @@ class Objective(Base):
     roadmap: Mapped[str | None] = mapped_column(Text, nullable=True)
     roadmap_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
     # Many-to-one relationship: many objectives → one user.
     # ``back_populates="objectives"`` links this to the ``objectives``
     # relationship on the ``User`` model.
-    user: Mapped["User"] = relationship(back_populates="objectives")
+    user: Mapped[User] = relationship(back_populates="objectives")
 
     # One-to-many relationship: one objective → many roadmap days.
     # ``cascade="all, delete-orphan"`` ensures that when an objective is
     # deleted, its roadmap days are deleted as well.
-    days: Mapped[list["RoadmapDay"]] = relationship(
+    days: Mapped[list[RoadmapDay]] = relationship(
         back_populates="objective",
         cascade="all, delete-orphan",
     )

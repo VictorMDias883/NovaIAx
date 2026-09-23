@@ -3,8 +3,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from app.commands.general_agent_command import GeneralAgentCommand
 from app.db.session import Base
 from app.models.objective import Objective
@@ -12,6 +10,8 @@ from app.models.roadmap_day import RoadmapDayStatus
 from app.models.user import User
 from app.services.general_agent_service import GeneralAgentService
 from app.services.roadmap_day_service import RoadmapDayService
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
 from tests.helpers import make_conversation_cache
 
 

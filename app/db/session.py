@@ -11,16 +11,27 @@ variable.  The application defaults to PostgreSQL, matching the
 Docker Compose stack.
 """
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import get_settings
 
 settings = get_settings()
 
+# The engine needs a concrete URL.  ``database_url`` is ``str | None`` in
+# the settings model, so fail with a clear message instead of letting
+# ``create_async_engine`` receive ``None``.
+_database_url = settings.database_url
+if not _database_url:
+    raise RuntimeError(
+        "DATABASE_URL must be set before the database engine can be created. "
+        "Use a PostgreSQL connection string, e.g. "
+        "postgresql+asyncpg://user:pass@<database-host>:5432/dbname"
+    )
+
 # Create the async engine.  ``echo=False`` disables SQL query logging;
 # set to ``True`` for debugging.
-engine = create_async_engine(settings.database_url, echo=False)
+engine = create_async_engine(_database_url, echo=False)
 
 # Session factory: each call to ``SessionLocal()`` returns a new
 # ``AsyncSession`` instance.  ``expire_on_commit=False`` prevents

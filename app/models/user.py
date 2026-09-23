@@ -11,7 +11,8 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum as SQLEnum, String, func
+from sqlalchemy import DateTime, String, func
+from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 # ``TYPE_CHECKING`` is used to avoid a circular import at runtime.
@@ -85,4 +86,4 @@ class User(Base):
     # One-to-many relationship: one user → many objectives.
     # ``back_populates`` links this to the ``user`` relationship on
     # the ``Objective`` model, keeping both sides in sync.
-    objectives: Mapped[list["Objective"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    objectives: Mapped[list[Objective]] = relationship(back_populates="user", cascade="all, delete-orphan")

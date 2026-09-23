@@ -21,7 +21,8 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.redis_client import RedisClient
-from app.cache.token_denylist import TokenDenylist, get_token_denylist as get_shared_token_denylist
+from app.cache.token_denylist import TokenDenylist
+from app.cache.token_denylist import get_token_denylist as get_shared_token_denylist
 from app.core.config import get_settings
 from app.core.security import ApiKeyService, decode_token
 from app.db.session import SessionLocal
@@ -167,6 +168,39 @@ async def require_admin(current_user: dict = Depends(get_current_user)) -> dict[
     if current_user.get("role") != UserRole.ADMIN.value:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
     return current_user
+
+
+async def require_db_user(current_user: dict = Depends(get_current_user)) -> dict[str, object]:
+    """Require an identity backed by a real database user.
+
+    API-key identities (``role == SERVICE``) are transient and carry the
+    sentinel id ``"api-key"`` instead of a numeric user ID.  Endpoints that
+    load or create per-user data must therefore reject them with a 403
+    instead of crashing with a ``ValueError`` when coercing ``"api-key"``
+    into an ``int``.
+    """
+    if current_user.get("role") == UserRole.SERVICE.value:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API-key authentication cannot be used on this endpoint")
+    return current_user
+
+
+async def require_admin_db_role(
+    session: AsyncSession = Depends(get_session),
+    current_user: dict = Depends(get_current_user),
+) -> dict[str, object]:
+    """Require an administrator, resolving the live role from the database.
+
+    Unlike :func:`require_admin`, which trusts the role claim embedded in
+    the JWT at login time, this dependency reloads the user so a recently
+    demoted (or deleted) user loses ADMIN privileges immediately instead
+    of keeping them for the remainder of the access token's lifetime.
+    """
+    if current_user.get("role") == UserRole.SERVICE.value:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    user = await _load_user(str(current_user["id"]), session)
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    return {**current_user, "role": user.role.value}
 
 
 def get_settings_dep() -> object:

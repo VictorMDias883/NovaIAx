@@ -7,7 +7,6 @@ class, the service layer remains free of ORM-specific code and can be
 unit-tested with a mock repository.
 """
 
-from typing import Any
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession

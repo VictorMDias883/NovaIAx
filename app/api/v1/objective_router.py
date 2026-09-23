@@ -3,7 +3,7 @@ API v1 objective endpoints.
 
 This router provides endpoints for creating and managing user
 objectives (tasks/goals with due dates).  All endpoints require
-authentication — the :func:`get_current_user` dependency enforces
+authentication — the :func:`require_db_user` dependency enforces
 this at the route level.
 
 Endpoints:
@@ -19,7 +19,7 @@ Architecture:
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_session
+from app.api.deps import get_session, require_db_user
 from app.clients.ai_client import GroqAIClient
 from app.commands.register_objective_command import RegisterObjectiveCommand
 from app.schemas.objective_schemas import ObjectiveResponse, RegisterObjectiveRequest
@@ -31,7 +31,7 @@ router = APIRouter(prefix="/objectives", tags=["objectives"])
 
 @router.get("/", response_model=list[ObjectiveResponse])
 async def list_objectives(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
@@ -62,7 +62,7 @@ async def list_objectives(
 @router.post("/register", response_model=ObjectiveResponse)
 async def register_objective(
     payload: RegisterObjectiveRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
 ) -> ObjectiveResponse:
     """Create a new objective for the authenticated user.
@@ -77,7 +77,7 @@ async def register_objective(
         payload: Validated request body with ``title``, ``description``,
             and ``due_date``.
         current_user: The authenticated user's identity (injected via
-            :func:`get_current_user`).  Must contain an ``id`` key.
+            :func:`require_db_user`).  Must contain an ``id`` key.
         session: Database session (injected via :func:`get_session`).
 
     Returns:
@@ -100,7 +100,7 @@ async def register_objective(
 @router.post("/{objective_id}/roadmap/renew", response_model=ObjectiveResponse)
 async def renew_objective_roadmap(
     objective_id: int = Path(..., ge=1),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
 ) -> ObjectiveResponse:
     """Renew an objective's roadmap for the next 7-day window.

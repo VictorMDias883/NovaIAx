@@ -4,6 +4,7 @@ import json
 from app.commands.chat_completion_command import ChatCompletionCommand
 from app.commands.objective_assistant_command import ObjectiveAssistantCommand
 from app.services.objective_assistant_service import ObjectiveAssistantService
+
 from tests.helpers import make_conversation_cache
 
 
@@ -71,7 +72,7 @@ def test_registers_objective_when_ai_returns_json_in_markdown_fence() -> None:
         conversation_cache=make_conversation_cache(),
     )
 
-    result = asyncio.run(service.create_completion(ChatCompletionCommand(agent_id=1, user_message="Quero criar uma meta"), user_id=7))
+    asyncio.run(service.create_completion(ChatCompletionCommand(agent_id=1, user_message="Quero criar uma meta"), user_id=7))
 
     assert len(objective_service.calls) == 1
     command, user_id = objective_service.calls[0]
@@ -91,7 +92,7 @@ def test_registers_objective_when_ai_returns_json_with_surrounding_text() -> Non
         conversation_cache=make_conversation_cache(),
     )
 
-    result = asyncio.run(service.create_completion(ChatCompletionCommand(agent_id=1, user_message="Quero criar uma meta"), user_id=7))
+    asyncio.run(service.create_completion(ChatCompletionCommand(agent_id=1, user_message="Quero criar uma meta"), user_id=7))
 
     assert len(objective_service.calls) == 1
     command, user_id = objective_service.calls[0]

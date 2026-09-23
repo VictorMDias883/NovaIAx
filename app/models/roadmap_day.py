@@ -74,4 +74,4 @@ class RoadmapDay(Base):
     # Many-to-one relationship: many days → one objective.
     # ``back_populates="days"`` links this to the ``days`` relationship
     # on the ``Objective`` model.
-    objective: Mapped["Objective"] = relationship(back_populates="days")
+    objective: Mapped[Objective] = relationship(back_populates="days")

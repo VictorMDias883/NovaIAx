@@ -99,6 +99,13 @@ class TokenResponse(BaseModel):
 
 
 class LogoutRequest(BaseModel):
-    """Request body for the ``POST /auth/logout`` endpoint."""
+    """Request body for the ``POST /auth/logout`` endpoint.
+
+    Attributes:
+        refresh_token: The refresh token to revoke.
+        access_token: Optional access token to revoke as well, so the
+            current session ends immediately.
+    """
 
     refresh_token: str = Field(min_length=1)
+    access_token: str | None = None

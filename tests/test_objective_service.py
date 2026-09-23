@@ -4,15 +4,14 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from app.commands.register_objective_command import RegisterObjectiveCommand
 from app.db.session import Base
 from app.models.objective import Objective
 from app.models.user import User
 from app.services.objective_service import ObjectiveService
+from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 class DummyAIClient:

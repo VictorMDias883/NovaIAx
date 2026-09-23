@@ -234,6 +234,8 @@ class ObjectiveService:
             roadmap=roadmap,
             roadmap_updated_at=now,
         )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Objective not found")
         days = await self._create_roadmap_days(updated.id, period_start, period_end, day_contents)
         return self._to_dict(updated, days)
 

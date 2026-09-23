@@ -15,7 +15,7 @@ Endpoints:
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_session
+from app.api.deps import get_session, require_db_user
 from app.commands.login_command import LoginCommand
 from app.commands.register_user_command import RegisterUserCommand
 from app.schemas.auth import (
@@ -136,18 +136,19 @@ async def logout(
     """
     service = AuthService(session)
     try:
-        await service.logout(payload.refresh_token)
+        await service.logout(payload.refresh_token, access_token=payload.access_token)
     except HTTPException:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        raise HTTPException(status_code=401, detail="Invalid refresh token") from None
     return TokenResponse(access_token="", refresh_token="")
 
 
 @router.get("/me", response_model=UserResponse)
-async def me(current_user: dict = Depends(get_current_user)) -> UserResponse:
+async def me(current_user: dict = Depends(require_db_user)) -> UserResponse:
     """Return the authenticated user's identity.
 
     The identity comes from the validated JWT access token (via
-    :func:`get_current_user`).
+    :func:`require_db_user`), which rejects API-key (``SERVICE``)
+    identities since they have no database row.
 
     Args:
         current_user: The authenticated user's identity (injected).

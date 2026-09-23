@@ -22,13 +22,14 @@ Architecture:
     Client → [Gateway Middleware] → /proxy/<service>/... → Downstream Service
 """
 
+import base64
 import hashlib
 import json
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 
 from app.api.deps import get_current_user, get_redis_client
 from app.cache.redis_client import RedisClient
@@ -44,24 +45,79 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 
-async def _cache_key(path: str, params: str, method: str) -> str:
+async def _cache_key(path: str, params: str, method: str, identity: str) -> str:
     """Generate a deterministic cache key for a request.
 
-    The key incorporates the HTTP method, URL path, and query-string
-    parameters so that different requests produce different cache keys.
-    A SHA-256 digest is used to keep the key length manageable and
+    The key incorporates the HTTP method, URL path, query-string
+    parameters, and the caller's identity so that different requests
+    produce different cache keys — and, crucially, so cached responses
+    can never leak between users (or between different API keys).  A
+    SHA-256 digest is used to keep the key length manageable and
     avoid issues with special characters in the path or params.
 
     Args:
         path: The request URL path (e.g. ``/api/v1/proxy/ai/chat``).
         params: The query-string parameters as a string.
         method: The HTTP method (e.g. ``GET``, ``POST``).
+        identity: A string scoping the entry to a single caller (user id
+            plus the raw API key when one was supplied).
 
     Returns:
         A cache key string in the format ``cache:<path>:<sha256_digest>``.
     """
-    digest = hashlib.sha256(f"{method}:{path}:{params}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{method}:{path}:{params}:{identity}".encode()).hexdigest()
     return f"cache:{path}:{digest}"
+
+
+def _identity_for_cache(request: Request, current_user: dict[str, Any]) -> str:
+    """Build a caller-scoping string for the cache key.
+
+    API-key identities share the sentinel id ``"api-key"``, so the raw
+    API key value is mixed in as well to keep each caller's cache
+    partition separate.
+    """
+    identity = str(current_user.get("id", "anonymous"))
+    api_key = request.headers.get("x-api-key")
+    if api_key:
+        identity = f"{identity}:{api_key}"
+    return identity
+
+
+# Hop-by-hop and encoding headers that must not be replayed from a cache
+# hit (the gateway re-derives them for each response).
+_CACHE_EXCLUDED_HEADERS = {
+    "content-length",
+    "content-encoding",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+}
+
+
+def _cache_serialise(status_code: int, headers: Any, body: bytes) -> str:
+    """Pack a downstream response into a JSON cache entry.
+
+    The raw bytes are base64-encoded so that binary payloads survive the
+    round-trip through the string-based cache stores without the
+    ``errors="ignore"`` data loss.
+    """
+    safe_headers = {key: value for key, value in headers.items() if key.lower() not in _CACHE_EXCLUDED_HEADERS}
+    return json.dumps(
+        {
+            "status_code": status_code,
+            "headers": safe_headers,
+            "body": base64.b64encode(body).decode("ascii"),
+        }
+    )
+
+
+def _cache_replay(cached: str) -> Response:
+    """Rebuild a :class:`Response` from a cached JSON entry."""
+    entry = json.loads(cached)
+    headers = dict(entry.get("headers") or {})
+    headers["X-Cache"] = "HIT"
+    body = base64.b64decode(entry["body"]) if isinstance(entry.get("body"), str) else b""
+    return Response(content=body, status_code=int(entry["status_code"]), headers=headers, media_type=None)
 
 
 @router.get("/{service_name:path}")
@@ -121,12 +177,18 @@ async def proxy_request(
 
     # --- 3. Check the cache (GET/HEAD only) ---
     if request.method in {"GET", "HEAD"}:
-        cache_key = await _cache_key(request.url.path, str(dict(request.query_params)), request.method)
+        identity = _identity_for_cache(request, current_user)
+        cache_key = await _cache_key(request.url.path, str(dict(request.query_params)), request.method, identity)
         cached = await redis_client.get(cache_key)
         if cached:
-            # Return the cached response with an ``X-Cache: HIT`` header
-            # so clients can distinguish cached from fresh responses.
-            return JSONResponse(content=json.loads(cached), headers={"X-Cache": "HIT"})
+            try:
+                # Return the cached response with an ``X-Cache: HIT`` header
+                # so clients can distinguish cached from fresh responses.
+                return _cache_replay(cached)
+            except (ValueError, TypeError):
+                # Stale/corrupt entries (e.g. written by an older format)
+                # are dropped and the request is forwarded downstream.
+                await redis_client.delete(cache_key)
 
     # --- 4. Build downstream headers ---
     # Strip sensitive headers that should not be forwarded to downstream
@@ -179,6 +241,10 @@ async def proxy_request(
 
     # --- 8. Cache the response (GET/HEAD only) ---
     if request.method in {"GET", "HEAD"}:
-        await redis_client.set(cache_key, response_body.decode("utf-8", errors="ignore"), ex=settings.cache_ttl_default)
+        await redis_client.set(
+            cache_key,
+            _cache_serialise(resp.status_code, resp.headers, response_body),
+            ex=settings.cache_ttl_default,
+        )
 
     return response

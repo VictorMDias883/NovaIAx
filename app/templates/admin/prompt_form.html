@@ -4,6 +4,7 @@
 <h1>Edit system prompt</h1>
 
 <form method="post" action="/admin/system-prompts/{{ prompt.id }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="form-group">
     <label for="tipo">Type</label>
     <input type="text" id="tipo" name="tipo" value="{{ prompt.tipo }}" required maxlength="100">

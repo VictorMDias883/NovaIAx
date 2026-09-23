@@ -9,7 +9,7 @@ were fulfilled.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_redis_client, get_session
+from app.api.deps import get_redis_client, get_session, require_db_user
 from app.cache.conversation_cache import ConversationCache
 from app.cache.redis_client import RedisClient
 from app.clients.ai_client import GroqAIClient
@@ -27,7 +27,7 @@ router = APIRouter(prefix="/agents/general", tags=["agents"])
 @router.post("/chat", response_model=GeneralAgentResponse)
 async def general_agent_chat(
     payload: GeneralAgentRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
     redis_client: RedisClient = Depends(get_redis_client),
 ) -> GeneralAgentResponse:
@@ -55,7 +55,7 @@ async def general_agent_chat(
 
 @router.delete("/conversation", response_model=GeneralAgentConversationClearResponse)
 async def clear_general_agent_conversation(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_db_user),
     redis_client: RedisClient = Depends(get_redis_client),
 ) -> GeneralAgentConversationClearResponse:
     """Delete the authenticated user's cached general-agent conversation.

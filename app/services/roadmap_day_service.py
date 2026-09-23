@@ -191,6 +191,8 @@ class RoadmapDayService:
 
         completed_at = datetime.now(UTC) if status == RoadmapDayStatus.COMPLETED else None
         updated = await self.day_repo.update_status(day_id, status=status, completed_at=completed_at)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Roadmap day not found")
         return updated
 
     @staticmethod

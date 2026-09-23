@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_session, require_admin
-from app.commands.demote_user_command import DemoteUserCommand
+from app.api.deps import get_session, require_admin_db_role
 from app.commands.delete_user_command import DeleteUserCommand
+from app.commands.demote_user_command import DemoteUserCommand
 from app.commands.promote_user_command import PromoteUserCommand
 from app.schemas.user_schemas import ActionResponse, UserListResponse
 from app.services.user_service import UserService
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 @router.patch("/{user_id}/promote", response_model=ActionResponse)
 async def promote_user(
     user_id: int,
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_admin_db_role),
     session: AsyncSession = Depends(get_session),
 ) -> ActionResponse:
     service = UserService(session)
@@ -25,7 +25,7 @@ async def promote_user(
 @router.patch("/{user_id}/demote", response_model=ActionResponse)
 async def demote_user(
     user_id: int,
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_admin_db_role),
     session: AsyncSession = Depends(get_session),
 ) -> ActionResponse:
     service = UserService(session)
@@ -36,7 +36,7 @@ async def demote_user(
 @router.delete("/{user_id}", response_model=ActionResponse)
 async def delete_user(
     user_id: int,
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_admin_db_role),
     session: AsyncSession = Depends(get_session),
 ) -> ActionResponse:
     service = UserService(session)
@@ -48,7 +48,7 @@ async def delete_user(
 async def list_users(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    current_user: dict = Depends(require_admin),
+    current_user: dict = Depends(require_admin_db_role),
     session: AsyncSession = Depends(get_session),
 ) -> UserListResponse:
     service = UserService(session)

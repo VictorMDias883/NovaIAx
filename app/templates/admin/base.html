@@ -15,6 +15,7 @@
       <a href="/admin/system-prompts">System Prompts</a>
       <span class="user">{{ admin.full_name }} ({{ admin.email }})</span>
       <form method="post" action="/admin/logout" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <button type="submit" class="btn btn-sm">Logout</button>
       </form>
     </div>

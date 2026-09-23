@@ -37,16 +37,17 @@ APP_DIR = Path(__file__).resolve().parent
 # ---------------------------------------------------------------------------
 # Application imports (must come *after* the path bootstrap above)
 # ---------------------------------------------------------------------------
-from app.api.v1.router import router as v1_router
-from app.api.admin import register_admin_exception_handler, router as admin_router
-from app.core.config import get_settings
-from app.core.health import check_database, check_redis
-from app.core.logging import configure_logging, get_logger
-from app.exceptions.handlers import register_exception_handlers
-from app.middlewares.auth_middleware import AuthMiddleware
-from app.middlewares.logging_middleware import LoggingMiddleware
-from app.middlewares.rate_limit_middleware import RateLimitMiddleware
-from app.middlewares.security_headers_middleware import SecurityHeadersMiddleware
+from app.api.admin import register_admin_exception_handler  # noqa: E402
+from app.api.admin import router as admin_router  # noqa: E402
+from app.api.v1.router import router as v1_router  # noqa: E402
+from app.core.config import get_settings  # noqa: E402
+from app.core.health import check_database, check_redis  # noqa: E402
+from app.core.logging import configure_logging, get_logger  # noqa: E402
+from app.exceptions.handlers import register_exception_handlers  # noqa: E402
+from app.middlewares.auth_middleware import AuthMiddleware  # noqa: E402
+from app.middlewares.logging_middleware import LoggingMiddleware  # noqa: E402
+from app.middlewares.rate_limit_middleware import RateLimitMiddleware  # noqa: E402
+from app.middlewares.security_headers_middleware import SecurityHeadersMiddleware  # noqa: E402
 
 # Module-level logger used by the health-check endpoint.
 logger = get_logger(__name__)
@@ -99,10 +100,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     The bootstrap module is imported lazily (rather than at module level) to
     keep DB-side startup logic out of the import-time path.
     """
+    from app.clients.ai_client import close_http_client
     from app.db.bootstrap import ensure_default_admin
 
     await ensure_default_admin()
     yield
+    await close_http_client()
 
 
 # ---------------------------------------------------------------------------

@@ -75,7 +75,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         limit = (
             self.settings.rate_limit_ai
-            if "/ai/" in path or "/agents/general" in path
+            if "/ai/" in path or "/agents/general" in path or "/objectives/assistant" in path
             else self.settings.rate_limit_default
         )
 
@@ -104,7 +104,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Record this request's timestamp in the sorted set (score = timestamp).
         try:
-            await self.redis_client.zadd(key, {now: now})
+            await self.redis_client.zadd(key, {str(now): now})
         except Exception:
             logger.exception("Failed to record rate-limit event in Redis — continuing without persistence")
 

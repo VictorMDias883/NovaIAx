@@ -3,6 +3,7 @@ import json
 
 from app.commands.chat_completion_command import ChatCompletionCommand
 from app.services.objective_assistant_service import ObjectiveAssistantService
+
 from tests.helpers import make_conversation_cache
 
 

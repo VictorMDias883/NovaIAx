@@ -23,7 +23,7 @@ class SystemPromptRepository:
         # order, making offset/limit pagination non-deterministic.
         stmt = select(SystemPrompt).order_by(SystemPrompt.id.asc()).offset(offset).limit(limit)
         result = await self.session.execute(stmt)
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def count(self) -> int:
         stmt = select(func.count()).select_from(SystemPrompt)

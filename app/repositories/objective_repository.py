@@ -85,7 +85,7 @@ class ObjectiveRepository:
             .limit(limit)
         )
         result = await self.session.execute(stmt)
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def update(self, objective_id: int, **values) -> Objective | None:
         """Update an objective's fields and return the updated instance.

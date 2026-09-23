@@ -148,17 +148,6 @@ class ApiKeyService:
         self.settings = settings or get_settings()
         self.redis_client = redis_client or RedisClient(self.settings)
 
-    async def store_api_key_hash(self, api_key: str) -> None:
-        """Store a hashed API key in Redis.
-
-        Only the first 8 characters of the key are used as the Redis key
-        (a prefix), while the full key is hashed with PBKDF2 before
-        storage.  This allows lookups by prefix without storing the raw
-        key.
-        """
-        client = await self.redis_client.get_client()
-        await client.set(f"api_key:{api_key[:8]}", pwd_context.hash(api_key))
-
     async def authenticate_api_key(self, api_key: str) -> bool:
         """Validate an API key.
 

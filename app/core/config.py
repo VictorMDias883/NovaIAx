@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     Every field has a default value, so the application can run without any
     environment configuration.  In production, sensitive values such as
-    ``secret_key`` and ``default_admin_password`` should always be provided
+    ``secret_key`` and ``admin_default_password`` should always be provided
     via environment variables.
     """
 
@@ -152,8 +152,13 @@ class Settings(BaseSettings):
 
     # --- API key authentication ----------------------------------------------
     api_key_header: str = "X-API-Key"
-    default_admin_username: str = "admin"
-    default_admin_password: str = Field(default_factory=lambda: os.getenv("DEFAULT_ADMIN_PASSWORD", ""))
+
+    # Legacy environment variable accepted for compatibility with older
+    # deployments (it previously backed the default-admin password warn).
+    # Kept only so existing environments that export ``DEFAULT_ADMIN_PASSWORD``
+    # keep booting; the bootstrap and its validation now read
+    # ``admin_default_password`` below.
+    default_admin_password: str | None = Field(default_factory=lambda: os.getenv("DEFAULT_ADMIN_PASSWORD") or None)
 
     # --- Default ADMIN bootstrap account --------------------------------------
     # Used by :func:`app.db.bootstrap.ensure_default_admin` to create the first
@@ -231,21 +236,22 @@ class Settings(BaseSettings):
 
 
 def _validate_admin_password() -> None:
-    """Warn if the default weak admin password is in use.
+    """Warn if the default admin bootstrap password is unset.
 
-    The default value ``""`` (empty string) is not secure.
-    Production deployments must set ``DEFAULT_ADMIN_PASSWORD`` via
-    an environment variable.
+    When ``ADMIN_DEFAULT_PASSWORD`` is not provided, the bootstrap creates
+    the first administrator with a *randomly generated* password (retrievable
+    from the server logs), so this is only a reminder — not a security error.
     """
     from app.core.logging import get_logger
 
     settings = get_settings()
-    if not settings.default_admin_password:
+    if not settings.admin_default_password:
         logger = get_logger(__name__)
         logger.warning(
-            "DEFAULT_ADMIN_PASSWORD is not set - using empty default. "
-            "Set the DEFAULT_ADMIN_PASSWORD environment variable "
-            "with a strong password for production deployments.",
+            "ADMIN_DEFAULT_PASSWORD is not set - the first admin will be "
+            "created with a random password.  Check the server logs on first "
+            "startup to retrieve it, or set ADMIN_DEFAULT_PASSWORD in "
+            "production to control the initial administrator password.",
         )
 
 

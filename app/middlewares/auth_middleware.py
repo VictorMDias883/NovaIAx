@@ -28,6 +28,7 @@ guaranteed to be from an authenticated source.
 """
 
 import re
+
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -36,14 +37,16 @@ from app.api.deps import get_current_user
 from app.core.logging import get_logger
 from app.core.security import ApiKeyService
 
-# Public path prefixes compiled as regex for efficient matching.
+# Public path prefixes compiled as regex for efficient matching.  Prefix
+# patterns are anchored with ``(?:/|$)`` so that, e.g., ``^/auth`` does not
+# accidentally treat ``/auth-admin`` or ``/author`` as public.
 _PUBLIC_PATH_PREFIXES = [
-    re.compile(r"^/auth"),
-    re.compile(r"^/api/v1/auth"),
-    re.compile(r"^/docs"),
-    re.compile(r"^/openapi"),
+    re.compile(r"^/auth(?:/|$)"),
+    re.compile(r"^/api/v1/auth(?:/|$)"),
+    re.compile(r"^/docs(?:/|$)"),
+    re.compile(r"^/openapi(?:/|$)"),
     re.compile(r"^/health$"),
-    re.compile(r"^/admin"),
+    re.compile(r"^/admin(?:/|$)"),
 ]
 
 
@@ -85,7 +88,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if exc.status_code in {401, 429}:
                 return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
             return JSONResponse(status_code=500, content={"detail": "Authentication failed"})
-        except Exception as exc:
+        except Exception:
             logger.exception("Authentication middleware failed", extra={"path": path})
             return JSONResponse(status_code=500, content={"detail": "Authentication failed"})
 

@@ -14,7 +14,7 @@ Endpoints:
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_session
+from app.api.deps import get_session, require_db_user
 from app.schemas.roadmap_day_schemas import (
     RoadmapDayListResponse,
     RoadmapDayResponse,
@@ -28,7 +28,7 @@ router = APIRouter(prefix="/objectives", tags=["objectives"])
 @router.get("/{objective_id}/roadmap/days", response_model=RoadmapDayListResponse)
 async def list_roadmap_days(
     objective_id: int = Path(..., ge=1),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
 ) -> RoadmapDayListResponse:
     """List all roadmap days of an objective (owner or admin only)."""
@@ -46,7 +46,7 @@ async def update_roadmap_day_status(
     payload: RoadmapDayStatusUpdate,
     objective_id: int = Path(..., ge=1),
     day_id: int = Path(..., ge=1),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
 ) -> RoadmapDayResponse:
     """Update the status (e.g. mark as fulfilled) of a roadmap day."""

@@ -125,20 +125,35 @@ class AuthService:
         if datetime.fromtimestamp(int(issued_at), tz=UTC) < valid_after:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
 
+        # Token rotation: revoke the presented refresh token before issuing
+        # the new pair, so a leaked/replayed refresh token can only ever be
+        # used once.
+        exp = payload.get("exp")
+        if jti and exp:
+            ttl = max(int(exp) - int(datetime.now(tz=UTC).timestamp()), 1)
+            await self.token_denylist.revoke(jti, ttl)
+
         return {
             "access_token": create_access_token(str(user.id), email=user.email, role=user.role.value),
             "refresh_token": create_refresh_token(str(user.id)),
         }
 
-    async def logout(self, refresh_token: str) -> None:
-        """Revoke a refresh token so it can no longer be used.
+    async def logout(self, refresh_token: str, access_token: str | None = None) -> None:
+        """Revoke a refresh token (and optionally an access token).
 
         The token's ``jti`` is stored in the denylist with a TTL that
         matches its remaining lifetime.  Once revoked, the token cannot
         be exchanged for a new pair via :meth:`refresh`.
 
+        .. note::
+            Access tokens are short-lived, so revoking them at logout is
+            optional.  When supplied, the access ``jti`` is revoked too,
+            meaning a subsequent call to ``GET /auth/me`` (or any
+            protected route) with that token returns 401 immediately.
+
         Args:
             refresh_token: The refresh token to revoke.
+            access_token: Optional access token to revoke as well.
 
         Raises:
             HTTPException(401): If the refresh token is invalid.
@@ -158,6 +173,18 @@ class AuthService:
 
         ttl = max(int(exp) - int(datetime.now(tz=UTC).timestamp()), 1)
         await self.token_denylist.revoke(jti, ttl)
+
+        if access_token:
+            try:
+                access_payload = decode_token(access_token)
+            except Exception:
+                access_payload = {}
+            if access_payload.get("type") == "access":
+                access_jti = access_payload.get("jti")
+                access_exp = access_payload.get("exp")
+                if access_jti and access_exp:
+                    access_ttl = max(int(access_exp) - int(datetime.now(tz=UTC).timestamp()), 1)
+                    await self.token_denylist.revoke(access_jti, access_ttl)
     async def login(self, command: LoginCommand) -> dict[str, Any]:
         """Authenticate a user and issue tokens.
 

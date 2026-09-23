@@ -89,7 +89,7 @@ class RoadmapDayRepository:
             .order_by(RoadmapDay.day_date, RoadmapDay.day_number)
         )
         result = await self.session.execute(stmt)
-        return result.scalars().all()
+        return list(result.scalars().all())
 
     async def update_status(
         self,

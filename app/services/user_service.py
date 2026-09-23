@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.commands.demote_user_command import DemoteUserCommand
 from app.commands.delete_user_command import DeleteUserCommand
+from app.commands.demote_user_command import DemoteUserCommand
 from app.commands.promote_user_command import PromoteUserCommand
 from app.core.logging import get_logger
 from app.models.user import User, UserRole
@@ -38,7 +37,7 @@ class UserService:
                 return {"message": "User is already an administrator."}
 
             target.role = UserRole.ADMIN
-            target.refresh_token_valid_after = datetime.now(timezone.utc)
+            target.refresh_token_valid_after = datetime.now(UTC)
             await self.session.flush()
             await self.session.refresh(target)
 
@@ -65,7 +64,7 @@ class UserService:
                 raise HTTPException(status_code=400, detail="Cannot demote the last administrator.")
 
             target.role = UserRole.USER
-            target.refresh_token_valid_after = datetime.now(timezone.utc)
+            target.refresh_token_valid_after = datetime.now(UTC)
             await self.session.flush()
             await self.session.refresh(target)
 

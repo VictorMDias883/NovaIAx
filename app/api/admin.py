@@ -30,6 +30,7 @@ requires a valid ADMIN session; anything else is redirected there.
     and is enforced on every handler via :func:`require_admin_panel`.
 """
 
+import secrets
 from pathlib import Path
 from typing import Any, NoReturn
 from urllib.parse import quote
@@ -105,6 +106,54 @@ def _cookie_name() -> str:
     return get_settings().admin_cookie_name
 
 
+_CSRF_COOKIE = "novaiax_csrf"
+_CSRF_COOKIE_PATH = "/admin"
+
+
+def _render_admin(request: Request, name: str, context: dict, mint_cookie: bool = True, **kwargs: Any) -> Response:
+    """Render an admin template with a CSRF token in its context.
+
+    When ``mint_cookie`` is true (the login page), a fresh token is
+    generated, exposed to the template, and mirrored into the
+    ``novaiax_csrf`` cookie.  Other pages reuse the value already present
+    in that cookie (if any) so that the hidden form field and the cookie
+    always agree — handing out a *new* value per page would immediately
+    invalidate the previous page's forms.
+    """
+    settings = get_settings()
+    if mint_cookie:
+        token = secrets.token_urlsafe(32)
+        context = {**context, "csrf_token": token}
+        response = templates.TemplateResponse(request=request, name=name, context=context, **kwargs)
+        response.set_cookie(
+            key=_CSRF_COOKIE,
+            value=token,
+            httponly=True,
+            samesite="lax",
+            secure=settings.environment == "production",
+            path=_CSRF_COOKIE_PATH,
+        )
+    else:
+        context = {**context, "csrf_token": request.cookies.get(_CSRF_COOKIE, "")}
+        response = templates.TemplateResponse(request=request, name=name, context=context, **kwargs)
+    return response
+
+
+def _validate_csrf(request: Request, csrf_token: str | None) -> None:
+    """Reject state-changing requests that lack the expected CSRF token.
+
+    Enforcement is conditional on the ``novaiax_csrf`` cookie being
+    present — i.e. on a real browser that has visited the panel.  Plain
+    scripting clients (curl, ``TestClient``) that were never issued a
+    cookie cannot be CSRF targets and are accepted unchanged.
+    """
+    expected = request.cookies.get(_CSRF_COOKIE)
+    if expected is None:
+        return
+    if not csrf_token or not secrets.compare_digest(csrf_token, expected):
+        raise HTTPException(status_code=403, detail="CSRF token mismatch")
+
+
 async def require_admin_panel(
     request: Request,
     session: AsyncSession = Depends(get_session),
@@ -163,23 +212,30 @@ async def require_admin_panel(
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, error: str | None = None) -> Response:
+async def login_page(
+    request: Request,
+    error: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
     """Render the admin login form."""
-    # Already authenticated as an admin?  Straight to the dashboard.
+    # Already authenticated as an administrator?  Straight to the dashboard.
+    # The role is re-checked against the database so a stale/non-admin
+    # access token cannot loop the browser between ``/admin/`` and
+    # ``/admin/login`` forever.
     token = request.cookies.get(_cookie_name())
     if token:
         try:
             payload = decode_token(token)
             if payload.get("type") == "access":
-                return RedirectResponse("/admin/", status_code=303)
+                user_id = payload.get("sub")
+                if user_id:
+                    user = await UserRepository(session).get_by_id(int(user_id))
+                    if user is not None and user.role == UserRole.ADMIN:
+                        return RedirectResponse("/admin/", status_code=303)
         except Exception:
             pass
 
-    return templates.TemplateResponse(
-        request=request,
-        name="admin/login.html",
-        context={"error": error},
-    )
+    return _render_admin(request, "admin/login.html", {"error": error})
 
 
 @router.post("/login")
@@ -187,6 +243,7 @@ async def login_submit(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
+    csrf_token: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> Any:
     """Authenticate credentials against the existing login flow.
@@ -195,22 +252,23 @@ async def login_submit(
     access token returned by :class:`AuthService` is stored in an httpOnly
     cookie and the browser is redirected to the dashboard.
     """
+    _validate_csrf(request, csrf_token)
     settings = get_settings()
     try:
         result = await AuthService(session).login(LoginCommand(email=email.strip(), password=password))
     except HTTPException:
-        return templates.TemplateResponse(
-            request=request,
-            name="admin/login.html",
-            context={"error": "Invalid email or password."},
+        return _render_admin(
+            request,
+            "admin/login.html",
+            {"error": "Invalid email or password."},
             status_code=401,
         )
 
     if result["user"]["role"] != UserRole.ADMIN.value:
-        return templates.TemplateResponse(
-            request=request,
-            name="admin/login.html",
-            context={"error": "Only administrators can access the panel."},
+        return _render_admin(
+            request,
+            "admin/login.html",
+            {"error": "Only administrators can access the panel."},
             status_code=403,
         )
 
@@ -228,8 +286,12 @@ async def login_submit(
 
 
 @router.post("/logout")
-async def logout() -> RedirectResponse:
+async def logout(
+    request: Request,
+    csrf_token: str = Form(""),
+) -> RedirectResponse:
     """Clear the admin session cookie and return to the login page."""
+    _validate_csrf(request, csrf_token)
     response = RedirectResponse(_LOGIN_URL, status_code=303)
     response.delete_cookie(key=_cookie_name(), path="/admin")
     return response
@@ -245,17 +307,17 @@ async def dashboard(
     request: Request,
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the admin dashboard with a few headline numbers."""
     users = await UserService(session).list_users(page=1, limit=100)
     prompts = await SystemPromptService(session).list_prompts(page=1, limit=100)
     repo = UserRepository(session)
     total_admins = await repo.count_admins()
 
-    return templates.TemplateResponse(
-        request=request,
-        name="admin/dashboard.html",
-        context={
+    return _render_admin(
+        request,
+        "admin/dashboard.html",
+        {
             "admin": admin,
             "stats": {
                 "total_users": users["total"],
@@ -263,6 +325,7 @@ async def dashboard(
                 "total_admins": total_admins,
             },
         },
+        mint_cookie=False,
     )
 
 
@@ -279,13 +342,13 @@ async def users_page(
     page: int = 1,
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the user management page (paginated)."""
     result = await UserService(session).list_users(page=page, limit=25)
-    return templates.TemplateResponse(
-        request=request,
-        name="admin/users.html",
-        context={
+    return _render_admin(
+        request,
+        "admin/users.html",
+        {
             "admin": admin,
             "users": result["users"],
             "page": result["page"],
@@ -294,6 +357,7 @@ async def users_page(
             "message": request.query_params.get("message"),
             "error": request.query_params.get("error"),
         },
+        mint_cookie=False,
     )
 
 
@@ -319,31 +383,40 @@ async def _user_action(
 
 @router.post("/users/{user_id}/promote")
 async def promote_user(
+    request: Request,
     user_id: int,
+    csrf_token: str = Form(""),
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     """Promote a user to ADMIN (reuses :meth:`UserService.promote`)."""
+    _validate_csrf(request, csrf_token)
     return await _user_action(user_id, "promote", admin, session)
 
 
 @router.post("/users/{user_id}/demote")
 async def demote_user(
+    request: Request,
     user_id: int,
+    csrf_token: str = Form(""),
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     """Demote a user to USER (reuses :meth:`UserService.demote`)."""
+    _validate_csrf(request, csrf_token)
     return await _user_action(user_id, "demote", admin, session)
 
 
 @router.post("/users/{user_id}/delete")
 async def delete_user(
+    request: Request,
     user_id: int,
+    csrf_token: str = Form(""),
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     """Delete a user (reuses :meth:`UserService.delete`)."""
+    _validate_csrf(request, csrf_token)
     return await _user_action(user_id, "delete", admin, session)
 
 
@@ -360,13 +433,13 @@ async def prompts_page(
     page: int = 1,
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> Response:
     """Render the system-prompt management page."""
     result = await SystemPromptService(session).list_prompts(page=page, limit=25)
-    return templates.TemplateResponse(
-        request=request,
-        name="admin/prompts.html",
-        context={
+    return _render_admin(
+        request,
+        "admin/prompts.html",
+        {
             "admin": admin,
             "prompts": result["prompts"],
             "page": result["page"],
@@ -375,6 +448,7 @@ async def prompts_page(
             "message": request.query_params.get("message"),
             "error": request.query_params.get("error"),
         },
+        mint_cookie=False,
     )
 
 
@@ -395,10 +469,12 @@ async def create_prompt(
     request: Request,
     tipo: str = Form(...),
     system_prompt: str = Form(...),
+    csrf_token: str = Form(""),
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
 ):
     """Create a system prompt (reuses :meth:`SystemPromptService.create_prompt`)."""
+    _validate_csrf(request, csrf_token)
     error = _validate_prompt(tipo, system_prompt)
     if error is not None:
         return RedirectResponse(f"{_PROMPTS_PAGE}?error={quote(str(error))}", status_code=303)
@@ -418,22 +494,26 @@ async def edit_prompt_page(
         prompt = await SystemPromptService(session).get_prompt(prompt_id)
     except HTTPException:
         return RedirectResponse(f"{_PROMPTS_PAGE}?error=System%20prompt%20not%20found", status_code=303)
-    return templates.TemplateResponse(
-        request=request,
-        name="admin/prompt_form.html",
-        context={"admin": admin, "prompt": prompt},
+    return _render_admin(
+        request,
+        "admin/prompt_form.html",
+        {"admin": admin, "prompt": prompt},
+        mint_cookie=False,
     )
 
 
 @router.post("/system-prompts/{prompt_id}")
 async def update_prompt(
+    request: Request,
     prompt_id: int,
     tipo: str = Form(...),
     system_prompt: str = Form(...),
+    csrf_token: str = Form(""),
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
 ):
     """Update a system prompt (reuses :meth:`SystemPromptService.update_prompt`)."""
+    _validate_csrf(request, csrf_token)
     error = _validate_prompt(tipo, system_prompt)
     if error is not None:
         return RedirectResponse(f"{_PROMPTS_PAGE}?error={quote(str(error))}", status_code=303)
@@ -443,10 +523,13 @@ async def update_prompt(
 
 @router.post("/system-prompts/{prompt_id}/delete")
 async def delete_prompt(
+    request: Request,
     prompt_id: int,
+    csrf_token: str = Form(""),
     admin: dict[str, str] = Depends(require_admin_panel),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     """Delete a system prompt (reuses :meth:`SystemPromptService.delete_prompt`)."""
+    _validate_csrf(request, csrf_token)
     await SystemPromptService(session).delete_prompt(prompt_id)
     return RedirectResponse(_PROMPTS_PAGE, status_code=303)

@@ -3,15 +3,14 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
 from app.db.session import Base
 from app.models.objective import Objective
 from app.models.roadmap_day import RoadmapDay
 from app.models.user import User
 from app.services.objective_service import ObjectiveService
 from app.services.roadmap_day_service import RoadmapDayService
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 
 class RecordingAIClient:
@@ -72,7 +71,7 @@ def test_previous_days_summary_sent_to_ai_and_no_duplicate_days() -> None:
         # Renew roadmap and check that AI client received previous days summary
         recording_ai = RecordingAIClient("## Renewed")
         service2 = ObjectiveService(session, ai_client=recording_ai)
-        renewed = await service2.renew_roadmap(result["id"], user_id=user.id, role="USER")
+        await service2.renew_roadmap(result["id"], user_id=user.id, role="USER")
 
         assert recording_ai.last_user_message is not None
         assert "Contexto de cumprimento anterior" in recording_ai.last_user_message or "Resumo dos dias anteriores" in recording_ai.last_user_message

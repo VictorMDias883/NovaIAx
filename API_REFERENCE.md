@@ -18,19 +18,24 @@ modify any code.
 
 ### Authentication
 
-Two credential schemes are accepted (either one works on protected routes):
+Two credential schemes exist; which one is accepted depends on the route:
 
-1. **JWT Bearer token** (`Authorization: Bearer <access_token>`) — obtained
-   from `POST /api/v1/auth/register` or `POST /api/v1/auth/login`.
+1. **JWT Bearer token** (`Authorization: Bearer <access_token>`) — the
+   universal scheme, obtained from `POST /api/v1/auth/register` or
+   `POST /api/v1/auth/login`.
    - Access token TTL: **15 minutes** (`access_token_ttl_minutes`).
    - Refresh token TTL: **7 days** (`refresh_token_ttl_days`).
    - Only tokens with `type == "access"` are accepted; refresh tokens and
      revoked (logged-out) `jti`s are rejected with `401`.
 2. **API key** (`X-API-Key: <key>`) — master key or a registered hashed key
-   (backed by Redis). Authenticates as a `SERVICE`-role user.
+   (backed by Redis). Authenticates as a `SERVICE`-role identity.
 
-Required header (protected routes):
-- `Authorization: Bearer <access_token>` **or** `X-API-Key: <api_key>`.
+- **Service-to-service (proxy) endpoints** accept either scheme.
+- **User-scoped endpoints** (anything that loads or creates data tied to a
+  database user — `/auth/me`, `/objectives/*`, roadmap days, the assistant,
+  agents and chat) require a **JWT**. An API-key identity is rejected with a
+  clean `403` `{"detail": "API-key authentication cannot be used on this endpoint"}`
+  instead of crashing.
 
 The public auth endpoints (`/api/v1/auth/register`, `/login`, `/refresh`,
 `/logout`) do **not** require any auth header. The admin panel uses its own
@@ -52,7 +57,7 @@ Sliding 60-second window, keyed by client IP, enforced by
 | Bucket | Limit | Applies to paths containing |
 |--------|-------|------------------------------|
 | Default | 60 req/min | everything |
-| AI (strict) | 10 req/min | `/ai/` or `/agents/general` (includes `POST /api/v1/ai/chat`, `POST /api/v1/agents/general/chat`, and `/api/v1/proxy/ai/...`) |
+| AI (strict) | 10 req/min | `/ai/`, `/agents/general`, or `/objectives/assistant` (includes `POST /api/v1/ai/chat`, `POST /api/v1/agents/general/chat`, `POST /api/v1/objectives/assistant`, and `/api/v1/proxy/ai/...`) |
 
 On exceeding the limit:
 
@@ -144,6 +149,10 @@ Authenticates and returns a fresh token pair.
 
 Exchanges a refresh token for a new access/refresh pair.
 
+> **Token rotation (single-use refresh):** the presented refresh token is
+> revoked — its `jti` is added to the denylist for its remaining TTL — and a
+> fresh pair is issued. Reusing a previously-refreshed token returns `401`.
+
 **Request body**
 
 | Field | Type   | Required |
@@ -165,13 +174,15 @@ Exchanges a refresh token for a new access/refresh pair.
 
 ### 2.4 POST `/api/v1/auth/logout`
 
-Revokes the refresh token (added to a Redis denylist for its remaining TTL).
+Revokes the presented refresh token — and, when supplied, the access token —
+by adding their `jti`s to a Redis denylist for the tokens' remaining TTL.
 
 **Request body**
 
 | Field | Type   | Required |
 |-------|--------|----------|
 | `refresh_token` | string | * |
+| `access_token` | string | no (when supplied, revokes the access `jti` too) |
 
 **Success — `200`**
 
@@ -190,7 +201,8 @@ Revokes the refresh token (added to a Redis denylist for its remaining TTL).
 
 Returns the identity of the authenticated user (from the token).
 
-**Required headers:** `Authorization: Bearer <access_token>` or `X-API-Key`.
+**Required headers:** `Authorization: Bearer <access_token>`. An `X-API-Key`
+identity is rejected with `403` (see §1 Authentication).
 
 **Success — `200`**
 
@@ -210,6 +222,7 @@ Returns the identity of the authenticated user (from the token).
 | Status | JSON | When |
 |--------|------|------|
 | 401 | `{"detail": "Authentication required"}` / `{"detail": "Invalid token"}` | No credentials / bad token |
+| 403 | `{"detail": "API-key authentication cannot be used on this endpoint"}` | Authenticated with `X-API-Key` instead of a JWT |
 | 429 | `{"detail": "Too Many Requests"}` | Rate limit |
 
 ---
@@ -408,7 +421,8 @@ Multi-turn conversational assistant that collects goal details and eventually
 persists the objective. Conversation history is kept server-side per user in a
 cache; it is cleared automatically once the objective is created.
 
-**Required headers:** auth. Subject to the **default** rate limit (60 req/min).
+**Required headers:** auth. Subject to the **AI (strict)** rate limit
+(10 req/min).
 
 **Request body**
 
@@ -528,7 +542,8 @@ Any HTTP method; forwards the request (same body/query/method) to the
 downstream service named by the first path segment. Downstream headers are
 echoed back; `Authorization`/`Cookie`/`X-API-Key` are stripped and
 `X-Forwarded-For` + `X-Gateway-User` are injected. GET/HEAD responses are
-cached (`cache_ttl_default` = 60 s; cached miss/hit flagged via `X-Cache`).
+cached **per caller** (`cache_ttl_default` = 60 s; hits flagged via
+`X-Cache: HIT`), so a cached response never leaks between users.
 
 > Typical mobile usage: none — the app talks to the first-class endpoints
 > above. This exists for gateway-to-microservice calls (e.g. an `ai` service
@@ -657,8 +672,15 @@ The web UI is browser-driven HTML; the mobile app does **not** use these.
 | GET  | `/admin/static/admin.css` | Stylesheet | public |
 
 All actions reuse the same service layer as the JSON API (no duplicated
-business logic). Login failures render the form with an error; non-admins
-receive `403` with "Only administrators can access the panel.".
+business logic). Login failures render the form with an error; a non-admin
+submitting the login form receives `403` with "Only administrators can access
+the panel.".
+
+**CSRF:** `GET /admin/login` mints a `novaiax_csrf` cookie (path `/admin`,
+httpOnly, `SameSite=Lax`). Every panel POST form carries a hidden `csrf_token`
+that must match that cookie — a mismatch returns `403`
+`{"detail": "CSRF token mismatch"}`. Clients that never received the cookie
+(plain scripting or `curl`) are accepted without a token.
 
 ---
 

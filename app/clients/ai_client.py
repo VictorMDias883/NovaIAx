@@ -7,13 +7,14 @@ for alternative providers without changing the service layer.
 
 from __future__ import annotations
 
-import httpx
 from abc import ABC, abstractmethod
 from typing import Any
 
+import httpx
+from fastapi import HTTPException
+
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from fastapi import HTTPException
 
 logger = get_logger(__name__)
 
@@ -37,7 +38,22 @@ def _get_httpx_client() -> httpx.AsyncClient:
         timeout = httpx.Timeout(settings.groq_api_timeout_seconds, connect=settings.groq_api_timeout_seconds)
         _httpx_client = httpx.AsyncClient(timeout=timeout)
         _httpx_initialized = True
+    assert _httpx_client is not None
     return _httpx_client
+
+
+async def close_http_client() -> None:
+    """Close the module-level HTTP client, releasing its connection pool.
+
+    Called from the application lifespan shutdown so the process can exit
+    cleanly without ``asyncio`` "cancelled / unclosed event loop" noise.
+    A subsequent :func:`_get_httpx_client` call re-creates the client.
+    """
+    global _httpx_client, _httpx_initialized
+    if _httpx_client is not None:
+        await _httpx_client.aclose()
+        _httpx_client = None
+        _httpx_initialized = False
 
 
 # ---------------------------------------------------------------------------

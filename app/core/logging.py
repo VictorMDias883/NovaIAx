@@ -18,7 +18,7 @@ Key components:
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 class JsonFormatter(logging.Formatter):
@@ -38,7 +38,7 @@ class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Build a JSON string from a :class:`logging.LogRecord`."""
         log_record = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "message": record.getMessage(),
             "module": record.module,

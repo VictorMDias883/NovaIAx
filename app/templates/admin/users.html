@@ -36,16 +36,19 @@
         <div class="actions-cell">
           {% if user.role == 'ADMIN' %}
             <form method="post" action="/admin/users/{{ user.id }}/demote" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="btn btn-sm">Demote</button>
             </form>
           {% else %}
             <form method="post" action="/admin/users/{{ user.id }}/promote" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="btn btn-sm">Promote</button>
             </form>
           {% endif %}
           {% if user.id|string != admin.id %}
             <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline"
                   onsubmit="return confirm('Delete user {{ user.email }}?');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="btn btn-sm btn-danger">Delete</button>
             </form>
           {% endif %}
