@@ -8,9 +8,11 @@ correctly across multiple workers/processes.
 
 Two rate limits are supported:
     - ``rate_limit_default`` (60 req/min) — applied to all endpoints.
-    - ``rate_limit_ai`` (10 req/min) — applied to AI endpoints (paths
-      containing ``/ai/`` or ``/agents/general``), which are more
-      expensive to serve.
+    - ``rate_limit_ai`` (10 req/min) — applied to endpoints that trigger an
+      AI provider call (``/ai/``, ``/agents/general``, ``/objectives/assistant``,
+      ``/objectives/register`` and ``/objectives/{id}/roadmap/renew``), which
+      are expensive to serve and count **against the provider's own**
+      requests/tokens-per-minute quota (not just ours).
 
 The sliding window is 60 seconds.  Timestamps outside this window
 are removed using ``zremrangebyscore`` before checking the count.
@@ -28,6 +30,27 @@ from app.core.logging import get_logger
 from app.core.network import get_client_ip
 
 logger = get_logger(__name__)
+
+#: Path fragments that identify endpoints which make an AI provider call
+#: (subject to the shared strict rate-limit bucket, ``rate_limit_ai``).
+_AI_ENDPOINT_PATH_FRAGMENTS = (
+    "/ai/",
+    "/agents/general",
+    "/objectives/assistant",
+    "/objectives/register",
+    "/roadmap/renew",
+)
+
+
+def is_ai_rate_limited(path: str) -> bool:
+    """Return ``True`` when ``path`` belongs to the strict AI rate-limit bucket.
+
+    Every matched endpoint triggers at least one call to the AI provider, so
+    they share the tighter bucket — this keeps the aggregate volume under the
+    provider's own quota (per-API-key RPM/TPM), which the per-IP limiter alone
+    cannot guarantee.
+    """
+    return any(fragment in path for fragment in _AI_ENDPOINT_PATH_FRAGMENTS)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -73,11 +96,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Select the appropriate limit: stricter for AI endpoints.
         path = request.url.path
-        limit = (
-            self.settings.rate_limit_ai
-            if "/ai/" in path or "/agents/general" in path or "/objectives/assistant" in path
-            else self.settings.rate_limit_default
-        )
+        limit = self.settings.rate_limit_ai if is_ai_rate_limited(path) else self.settings.rate_limit_default
 
         # Prune timestamps that fall outside the 60-second sliding window
         # and count remaining members in the window. If Redis fails for any

@@ -57,13 +57,17 @@ Sliding 60-second window, keyed by client IP, enforced by
 | Bucket | Limit | Applies to paths containing |
 |--------|-------|------------------------------|
 | Default | 60 req/min | everything |
-| AI (strict) | 10 req/min | `/ai/`, `/agents/general`, or `/objectives/assistant` (includes `POST /api/v1/ai/chat`, `POST /api/v1/agents/general/chat`, `POST /api/v1/objectives/assistant`, and `/api/v1/proxy/ai/...`) |
+| AI (strict) | 10 req/min | `/ai/`, `/agents/general`, `/objectives/assistant`, `/objectives/register`, or `/roadmap/renew` (every endpoint that makes an AI-provider call: `POST /api/v1/ai/chat`, `/agents/general/chat`, `/objectives/assistant`, `/objectives/register`, `/objectives/{id}/roadmap/renew`, and `/api/v1/proxy/ai/...`) |
 
 On exceeding the limit:
 
 - **429** — `{"detail": "Too Many Requests"}` with `X-RateLimit-Limit`,
   `X-RateLimit-Remaining` and `Retry-After: 60` headers.
 - If Redis is unreachable the limiter falls back to permissive (does not block).
+- AI-provider throttling: a `429` from the AI provider (Groq) is retried
+  server-side with exponential backoff, honoring Groq's `Retry-After` header,
+  up to a few attempts. Persistent throttling surfaces to the caller as a
+  `429` with a `Retry-After` header instead of a generic `502`.
 
 ### Error response shape
 

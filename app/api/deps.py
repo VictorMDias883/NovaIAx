@@ -9,7 +9,8 @@ sessions, service instances) across multiple endpoints.
 Key dependencies:
     - :func:`get_session` — provides a request-scoped :class:`AsyncSession`.
     - :func:`get_api_key_service` — provides an :class:`ApiKeyService`.
-    - :func:`get_redis_client` — provides a :class:`RedisClient` instance.
+    - :func:`get_redis_client` — provides the shared :class:`RedisClient`
+      instance (one per process, so cached state persists across requests).
     - :func:`get_current_user` — authenticates the request and returns
       the current user's identity (via JWT or API key).
     - :func:`require_admin` — requires the current user to be an admin.
@@ -28,6 +29,14 @@ from app.core.security import ApiKeyService, decode_token
 from app.db.session import SessionLocal
 from app.models.user import User, UserRole
 from app.repositories.user_repository import UserRepository
+
+#: Process-wide Redis client shared by every dependency injection.
+#: A single instance holds cross-request state (conversation history, AI
+#: response cache, denylists).  Previously each request created a fresh
+#: ``RedisClient``, so whenever real Redis was unreachable the in-memory
+#: fallback (which is per-instance) lost the conversation between turns —
+#: the assistants "forgot" the whole thread on the very next message.
+_persistent_redis_client: RedisClient | None = None
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -50,8 +59,19 @@ async def get_api_key_service() -> ApiKeyService:
 
 
 async def get_redis_client() -> RedisClient:
-    """Dependency that provides a :class:`RedisClient` instance."""
-    return RedisClient()
+    """Provide the process-wide :class:`RedisClient` instance.
+
+    Created once and reused for the lifetime of the process.  Real Redis
+    (or the in-memory fallback) therefore keeps state across requests —
+    conversation history, the AI-response cache, denylists — instead of
+    losing it whenever a fresh per-request client is constructed.  In
+    tests, :meth:`RedisClient.reset_all_memory_stores` still isolates each
+    test from the previous one.
+    """
+    global _persistent_redis_client
+    if _persistent_redis_client is None:
+        _persistent_redis_client = RedisClient()
+    return _persistent_redis_client
 
 
 async def get_token_denylist() -> TokenDenylist:

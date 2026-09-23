@@ -18,7 +18,27 @@ from app.cache.redis_client import RedisClient
 #: trimmed to avoid unbounded growth of the cached history.
 MAX_HISTORY_MESSAGES = 50
 
+#: Rough token budget for the cached history.  Keeping the history well
+#: below the provider's per-minute token limit prevents ``429``s caused by
+#: large backlogs and stops the oldest (but still relevant) turns from being
+#: silently evicted by a single huge message.  Tokens are approximated as
+#: ``chars / 4`` which is close enough for a *limiting* heuristic.
+MAX_HISTORY_TOKENS = 6000
+
+#: Estimated tokens added per message on top of its content.
+_MESSAGE_OVERHEAD_TOKENS = 4
+#: Approximate characters that fit into a single token.
+_CHARS_PER_TOKEN = 4
+
 _ALLOWED_ROLES = {"user", "assistant"}
+
+
+def _estimate_tokens(messages: list[dict[str, str]]) -> int:
+    """Approximate the token count of a message list (chars/4 + overhead)."""
+    total = 0
+    for message in messages:
+        total += _MESSAGE_OVERHEAD_TOKENS + len(message.get("content", "")) // _CHARS_PER_TOKEN
+    return total
 
 
 class ConversationCache:
@@ -63,8 +83,19 @@ class ConversationCache:
         ]
 
     async def save(self, agent: str, user_id: int, messages: list[dict[str, str]]) -> None:
-        """Persist the conversation history, trimming the oldest messages."""
-        trimmed = messages[-MAX_HISTORY_MESSAGES:]
+        """Persist the conversation history, trimming the oldest messages.
+
+        Trimming drops complete oldest turns (two messages at a time to keep
+        ``user``/``assistant`` alternation intact) until the history fits both
+        the message cap (:data:`MAX_HISTORY_MESSAGES`) and the token budget
+        (:data:`MAX_HISTORY_TOKENS`).  The latest turn is always preserved, so
+        the assistant never loses the most recent exchange.
+        """
+        trimmed = list(messages)
+        while len(trimmed) > 2 and (
+            len(trimmed) > MAX_HISTORY_MESSAGES or _estimate_tokens(trimmed) > MAX_HISTORY_TOKENS
+        ):
+            trimmed = trimmed[2:]
         await self.client.set(self._key(agent, user_id), json.dumps(trimmed, ensure_ascii=False))
 
     async def clear(self, agent: str, user_id: int) -> None:
