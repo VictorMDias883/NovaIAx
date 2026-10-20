@@ -15,9 +15,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # requirements.txt mirrors pyproject.toml's [project.dependencies] and is the
 # source of truth for the Docker build's dependency layer.  This layer is
 # cached across application code changes — rebuilds only trigger when the
-# dependency list itself changes.
+# dependency list itself changes.  ``-c constraints.txt`` (when present)
+# pins the versions proven to work together so an upstream release cannot
+# break the build; ``--no-cache-dir`` keeps the layer slim.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir --no-compile -r requirements.txt
+COPY constraints.txt* ./
+RUN pip install --no-cache-dir --no-compile -r requirements.txt $([ -f constraints.txt ] && echo '-c constraints.txt')
 
 # ── Application layer ─────────────────────────────────────────────────────────
 # Copy the full application tree (app/, migrations/, alembic.ini, …).
@@ -29,6 +32,8 @@ COPY . .
 # repository checkout preserved file modes.
 RUN chmod +x entrypoint.sh
 
+# Metadata only — the port actually bound at runtime is ``${PORT:-8000}``
+# (Render injects PORT; see entrypoint.sh).
 EXPOSE 8000
 
 # Run database migrations (alembic upgrade head) before starting uvicorn —
