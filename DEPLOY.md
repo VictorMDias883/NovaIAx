@@ -21,9 +21,10 @@ The committed [`render.yaml`](render.yaml) Blueprint creates:
 
 | Resource | Details |
 | --- | --- |
-| Web service `novaiax-gateway` | `runtime: docker` — uses the existing `Dockerfile` as-is; region **`virginia`**, plan **`free`**, health check at **`/health`**. |
+| Web service `novaiax-gateway` | `runtime: docker` — uses the existing `Dockerfile` as-is; region **`virginia`**, plan **`free`**, health check at **`/health`**. No port is hardcoded: Render injects `$PORT` and `entrypoint.sh` binds uvicorn to `${PORT:-8000}` with `--proxy-headers`. |
 | PostgreSQL `novaiax-db` | Render-managed Postgres, plan `free`. Its connection string is injected into the web service's `DATABASE_URL` via `fromDatabase` (no manual URL rewriting — the app normalises `postgresql://` → `postgresql+asyncpg://` internally). |
-| Secrets | `SECRET_KEY`, `GROQ_API_KEY`, `MASTER_API_KEY`, `DEFAULT_ADMIN_PASSWORD`, `REDIS_URL`, all declared `sync: false` → Render prompts for them on first sync; never stored in the repo. |
+| Secrets | `SECRET_KEY` (Render-generated via `generateValue: true`), plus `MIGRATION_DATABASE_URL`, `REDIS_URL`, `GROQ_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `AI_PROVIDERS_JSON`, `MASTER_API_KEY`, `ADMIN_DEFAULT_PASSWORD` and the `GOOGLE_PLAY_*` credentials — all `sync: false` → Render prompts for them on first sync; never stored in the repo. |
+| Fixed values | `ENVIRONMENT=production`, `TRUST_PROXY_HEADERS=true`, `GOOGLE_PLAY_PACKAGE_NAME=br.com.novaiax.agente`. Full list in **[Render environment](#render-environment)**. |
 
 ### Regions
 
@@ -93,15 +94,19 @@ render blueprints validate render.yaml
 ## 3. Set secrets in the dashboard
 
 During the **initial Blueprint sync**, Render's UI asks you for a value for each
-`sync: false` variable.  Fill them in:
+`sync: false` variable (`SECRET_KEY` needs nothing — Render generates it with
+`generateValue: true`).  Full reference in **[Render environment](#render-environment)**
+(required/optional, example, source for each variable):
 
 | Secret | Value |
 | --- | --- |
-| `SECRET_KEY` | `openssl rand -hex 32` (64-hex random) |
 | `MASTER_API_KEY` | `openssl rand -hex 24` (48-hex random) |
 | `GROQ_API_KEY` | your `gsk_…` key from [console.groq.com](https://console.groq.com) |
-| `DEFAULT_ADMIN_PASSWORD` | a strong password (required by `_validate_production_secrets` in `app/core/config.py` even if unused) |
 | `REDIS_URL` | your Upstash `rediss://…` connection string (§ 4) |
+| `ADMIN_DEFAULT_PASSWORD` | a strong password — optional; a random one is logged on first boot when unset |
+| `MIGRATION_DATABASE_URL` | only for Supabase: the session-pooler URL (§ 10); leave empty to reuse `DATABASE_URL` |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` (+ `GOOGLE_PLAY_PRODUCTS_JSON`, `GOOGLE_PLAY_RTDN_TOKEN`, `GOOGLE_PLAY_RTDN_AUDIENCE`) | optional — billing verification stays inert until configured |
+| `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `AI_PROVIDERS_JSON` | optional alternatives to `GROQ_API_KEY`; at least one provider key is mandatory |
 
 **Rotating / editing later** — Blueprint updates skip `sync: false`, so manage
 these per service:
@@ -114,8 +119,59 @@ these per service:
 
 > Keep secrets out of `render.yaml` and out of git — only non-secret config
 > (ENVIRONMENT, GROQ_API_MODEL, RATE_LIMIT_*, CACHE_TTL_*, MAX_PAYLOAD_BYTES,
-> TRUST_PROXY_HEADERS) is declared as plain `value:` entries there.  `DATABASE_URL`
-> is injected automatically by `fromDatabase` and needs no action.
+> TRUST_PROXY_HEADERS, GOOGLE_PLAY_PACKAGE_NAME) is declared as plain
+> `value:` entries there.  `DATABASE_URL` is injected automatically by
+> `fromDatabase` (Render never writes it to git either) and `SECRET_KEY` is
+> created by Render with `generateValue: true`.
+
+---
+
+## Render environment
+
+Every variable `render.yaml` provisions for the `novaiax-gateway` service,
+cross-checked against the production validators in `app/core/config.py`
+(`_validate_production_secrets`, `_validate_admin_password`).  The app boots
+in `ENVIRONMENT=production` as long as the **required** rows are set —
+everything marked *optional* has a working default (or simply disables the
+feature).
+
+| Variable | Required? | Example | Where to get it |
+| --- | --- | --- | --- |
+| `ENVIRONMENT` | **Required** (declared `value`) | `production` | Set to `production` only on Render; it turns on the hard boot-time validators. |
+| `DATABASE_URL` | **Required** (auto-injected) | `postgresql://novaiax:…@hostname:5432/renderdb` | Render fills it from the managed Postgres via `fromDatabase` (§ 0). With Supabase instead, replace the entry with `sync: false` and paste the **pooled** URL (transaction pooler `6543` is fine — the app sets `statement_cache_size=0`). |
+| `SECRET_KEY` | **Required** (generated) | `9f4c…` (64 hex) | Render generates it on first Blueprint sync (`generateValue: true`); rotate with `openssl rand -hex 32` on the service's **Environment** tab. |
+| `MASTER_API_KEY` | **Required** | `a71f…` (48 hex) | `openssl rand -hex 24` — any request carrying it is fully trusted, so keep it out of clients. |
+| `GROQ_API_KEY` | **Required** (unless another provider key is set) | `gsk_…` | <https://console.groq.com> → API Keys.  At least one of `GROQ_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `AI_PROVIDERS_JSON` must exist. |
+| `REDIS_URL` | **Required** | `rediss://default:…@va1-xyz.upstash.io:6379` | Upstash console → database → *Connect* (§ 4). |
+| `GOOGLE_PLAY_PACKAGE_NAME` | **Required** (declared `value`) | `br.com.novaiax.agente` | Play Console → *Setup → Advanced → App details* (the Android application id). Must stay a valid package name or the app refuses to boot in production. |
+| `MIGRATION_DATABASE_URL` | Optional | `postgresql://…-virginia.pooler.supabase.com:5432/postgres` | Supabase → *Connect* → **Session pooler** (port `5432`, IPv4).  When unset, Alembic migrates `DATABASE_URL` (§ 5 / § 10). |
+| `OPENAI_API_KEY` | Optional | `sk-…` | <https://platform.openai.com/api-keys>. |
+| `OPENROUTER_API_KEY` | Optional | `sk-or-v1-…` | <https://openrouter.ai/keys>. |
+| `AI_PROVIDERS_JSON` | Optional | `[{"name":"groq","base_url":"https://api.groq.com/openai/v1","api_key":"gsk_…","default_model":"openai/gpt-oss-120b","priority":10}]` | Your own fleet definition; replaces the individual `*_API_KEY` variables entirely (`.env.example` documents the schema). |
+| `ADMIN_DEFAULT_PASSWORD` | Optional (recommended) | a strong password | Chosen by you (`openssl rand -hex 16`).  If unset, the first admin is created with a random password printed once in the logs.  Legacy name `DEFAULT_ADMIN_PASSWORD` still works. |
+| `GROQ_API_MODEL` | Optional (declared `value`) | `openai/gpt-oss-120b` | Default model when a task has no model mapping; the Groq model catalog. |
+| `GROQ_API_BASE_URL` | Optional (declared `value`) | `https://api.groq.com/openai/v1` | Groq docs — only change it if Groq moves the endpoint. |
+| `TRUST_PROXY_HEADERS` | Optional, **`true` on Render** (declared `value`) | `true` | Keep `true` only behind Render's edge proxy so `X-Forwarded-For` is trusted for rate limiting. |
+| `RATE_LIMIT_DEFAULT` / `RATE_LIMIT_AI` | Optional (declared `value`) | `"60"` / `"10"` | Requests per minute per IP; tune to your plan. |
+| `CACHE_TTL_DEFAULT` / `CACHE_TTL_AI` | Optional (declared `value`) | `"60"` / `"300"` | Redis TTL seconds for generic vs. AI responses. |
+| `MAX_PAYLOAD_BYTES` | Optional (declared `value`) | `"1048576"` | Request body cap; over it the gateway answers `413`. |
+| `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | Optional | `{"type":"service_account",…}` | Play Console → *Setup → API access → Create new service account* → download JSON key.  Billing verification stays inert without it. |
+| `GOOGLE_PLAY_PRODUCTS_JSON` | Optional | `{"starter":"novaiax_starter","pro":"novaiax_pro"}` | Play Console → *Monetize → Products* (plan → product id mapping). |
+| `GOOGLE_PLAY_RTDN_TOKEN` | Optional | a random shared secret | Set it yourself; it must match the token configured on the Pub/Sub subscription that pushes to `/api/v1/billing/google/rtdn`. |
+| `GOOGLE_PLAY_RTDN_AUDIENCE` | Optional | `https://pubsub.googleapis.com/projects/…` | Pub/Sub subscription's OIDC audience, used to verify the push token. |
+
+Other useful variables are **not** in `render.yaml` (they have safe defaults
+and can be added as `sync: false` or plain values as needed):
+`ADMIN_PANEL_ENABLED` (default `true`), `ADMIN_DEFAULT_EMAIL`
+(`admin@admin.com`), `ADMIN_REQUIRE_TOTP` (default `false`),
+`ADMIN_TOTP_ISSUER`, `ALLOWED_ORIGINS` (CORS; unset = same-origin only),
+`DB_POOL_SIZE`/`DB_MAX_OVERFLOW`/`DB_POOL_RECYCLE_SECONDS`,
+`FIRST_USER_ADMIN`, `RUN_MIGRATIONS` (entrypoint migration switch, default
+`true`) and `PORT` (injected by Render — never set it yourself).
+
+> `PORT` is deliberately absent from `render.yaml`: Render picks the port for
+> Docker services and injects it as `$PORT`; `entrypoint.sh` binds uvicorn to
+> `${PORT:-8000}` accordingly.
 
 ---
 
@@ -424,6 +480,7 @@ nothing changed).
 | `/health` returns `redis: error` | Wrong/missing `REDIS_URL`; verify the Upstash `rediss://…` string in the service's **Environment** tab, then redeploy/restart. |
 | `/health` returns `db: error` | `DATABASE_URL` missing or the DB expired/upgraded. Re-check the `fromDatabase` link and the Postgres resource status. |
 | Deploy fails at start (`entrypoint` exits non-zero) | `alembic upgrade head` failed — read the deploy logs (`render logs -r <id> --text alembic --tail`) and check migration filenames vs. models. |
+| Deploy crashes with *The SQLAlchemy asyncio module requires that the Python greenlet library is installed*, then Render reports **“No open ports detected”** | The image lacks `greenlet`/`sqlalchemy[asyncio]` — `requirements.txt` must list both (they are runtime deps in `requirements.txt` **and** `pyproject.toml`). uvicorn never starts because the entrypoint exits on the failed migration, so the service has no listening port. |
 | First request after idle is slow / times out | Free-tier cold start (~30–60 s). Raise the Flutter client timeout to ≥ 60–90 s or upgrade to a paid plan (§ 7). |
 | 401 on everything including `/health` | `/health` is exempt; if other routes 401, check `SECRET_KEY`/token configuration. |
 | `SECRET_KEY must be set…Raises RuntimeError` | `ENVIRONMENT=production` + placeholder `SECRET_KEY`. Rotate it in the Env/Secrets tab and redeploy. |

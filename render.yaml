@@ -2,8 +2,11 @@
 # Reference: https://render.com/docs/blueprint-spec
 #
 # Infrastructure provisioned on first Blueprint sync:
-#   - A Docker-based web service (builds the existing Dockerfile as-is) running
-#     uvicorn on port 8000, with ``/health`` as the health check path.
+#   - A Docker-based web service (builds the existing Dockerfile as-is).
+#     Render injects ``PORT`` (never hardcoded here); ``entrypoint.sh`` binds
+#     uvicorn to ``${PORT:-8000}`` with ``--proxy-headers`` and
+#     ``--forwarded-allow-ips='*'`` so client IPs survive Render's edge proxy.
+#     ``/health`` is the health check path.
 #   - A managed PostgreSQL database whose connection string is injected into
 #     the web service's ``DATABASE_URL`` automatically via ``fromDatabase``.
 #   - Redis is NOT part of this file: Render's free tier has no managed
@@ -21,9 +24,16 @@
 # ``0.5c-512mb`` (Starter) to remove spin-down entirely.
 #
 # Migrations: the container entrypoint (``entrypoint.sh``) runs
-# ``alembic upgrade head`` before starting uvicorn.  Render's native
-# ``preDeployCommand`` is paid-plan-only, so it is intentionally not used
-# while the service is on the free plan (see DEPLOY.md for the upgrade path).
+# ``alembic upgrade head`` before starting uvicorn (skip with
+# ``RUN_MIGRATIONS=false``).  Render's native ``preDeployCommand`` is
+# paid-plan-only, so it is intentionally not used while the service is on
+# the free plan (see DEPLOY.md → § 5 for the upgrade path).
+#
+# Every production requirement in ``app/core/config.py``'s
+# ``_validate_production_secrets`` is satisfied below: SECRET_KEY
+# (generated), MASTER_API_KEY, at least one AI provider (GROQ_API_KEY),
+# DATABASE_URL (fromDatabase), REDIS_URL and a valid
+# GOOGLE_PLAY_PACKAGE_NAME — so the app does not abort at boot.
 
 services:
   - type: web
@@ -56,10 +66,16 @@ services:
       # request (single trusted hop), so it cannot be spoofed from outside.
       - key: TRUST_PROXY_HEADERS
         value: "true"
+      # Android application id used by purchase verification and the RTDN
+      # push endpoint; must be a syntactically valid package name in
+      # production (checked by _validate_production_secrets).
+      - key: GOOGLE_PLAY_PACKAGE_NAME
+        value: br.com.novaiax.agente
 
       # ── Database: auto-injected connection string ─────────────────────────
       # Render fills DATABASE_URL with the managed Postgres connection
-      # string (``postgresql://...``).  SQLAlchemy async accepts this scheme;
+      # string (``postgresql://...``).  SQLAlchemy async accepts this scheme
+      # (normalised to ``postgresql+asyncpg://`` in app/core/config.py);
       # no manual rewriting is needed (unlike Fly's asyncpg-only URLs).
       - key: DATABASE_URL
         fromDatabase:
@@ -71,17 +87,45 @@ services:
       # flow and keeps the values out of this repo.  On Blueprint *updates*
       # Render ignores ``sync: false`` entries — set/rotate values from the
       # service's Environment page in the dashboard.
+      # SECRET_KEY is the exception: Render generates a strong random value
+      # on first sync (generateValue), so no manual input is needed.
       - key: SECRET_KEY
-        sync: false
-      - key: GROQ_API_KEY
-        sync: false
-      - key: MASTER_API_KEY
-        sync: false
-      - key: DEFAULT_ADMIN_PASSWORD
+        generateValue: true
+      # Alembic target.  Optional: when unset, migrations use DATABASE_URL.
+      # With Supabase set the Supavisor SESSION-mode URL (pooler host,
+      # port 5432, IPv4) — never the transaction pooler (6543) and not the
+      # IPv6-only direct host (see DEPLOY.md → § 10).
+      - key: MIGRATION_DATABASE_URL
         sync: false
       # Upstash Redis connection string (``rediss://...``).  Render has no
       # free managed Redis, so this points at our external Upstash instance.
       - key: REDIS_URL
+        sync: false
+      # AI providers — at least one key is mandatory in production.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: AI_PROVIDERS_JSON
+        sync: false
+      # Bypass key trusted by every request — required in production.
+      - key: MASTER_API_KEY
+        sync: false
+      # First-admin bootstrap password (legacy name DEFAULT_ADMIN_PASSWORD
+      # still works); optional — a random one is logged when unset.
+      - key: ADMIN_DEFAULT_PASSWORD
+        sync: false
+      # Google Play billing verification (optional — billing is inert
+      # without the service-account key).
+      - key: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_PLAY_PRODUCTS_JSON
+        sync: false
+      - key: GOOGLE_PLAY_RTDN_TOKEN
+        sync: false
+      - key: GOOGLE_PLAY_RTDN_AUDIENCE
         sync: false
 
 databases:
