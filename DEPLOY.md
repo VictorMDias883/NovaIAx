@@ -152,12 +152,24 @@ on the free plan migrations run **inside the container**:
 
 - `Dockerfile`'s `CMD` is `/app/entrypoint.sh`.
 - `entrypoint.sh` runs `alembic upgrade head` (idempotent no-op when the schema
-  is current), then `exec uvicorn app.main:app --host 0.0.0.0 --port 8000`.
-- With `set -e`, a **failed migration stops the script**: the container exits
-  non-zero, uvicorn never starts, and Render marks the deploy failed.  (On the
+  is current), then `exec uvicorn app.main:app --host 0.0.0.0 --port
+  ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'`.  Render injects
+  `PORT`; the proxy flags make uvicorn honour `X-Forwarded-*` from Render's
+  edge proxy so rate limiting sees the real client IP.
+- With `set -e` plus an explicit guard, a **failed migration prints
+  `migration failed` and stops the script**: the container exits non-zero,
+  uvicorn never starts, and Render marks the deploy failed.  (On the
   `free` plan Render restarts the instance in place, so a failed deploy leaves
   the service down until the next successful deploy; paid plans get
   zero-downtime rollouts that keep the old version serving.)
+- **Skipping migrations:** set `RUN_MIGRATIONS=false` in the service
+  environment (default is `true`) and the entrypoint starts uvicorn without
+  running Alembic — for operators with an out-of-band migration step.
+- **Which database Alembic migrates:** `migrations/env.py` prefers
+  `MIGRATION_DATABASE_URL` when set and falls back to `DATABASE_URL`
+  otherwise (both normalised to `postgresql+asyncpg://`).  Use the override
+  when the app's pooled URL and the migration URL must differ — the Supabase
+  case described in § 10.
 
 **Tradeoff vs. a pre-deploy hook:** a real `preDeployCommand` runs on a separate
 instance *before* the deploy, cleanly aborting the deploy on failure.  The
@@ -355,14 +367,29 @@ through the router (quota-exempt, per-admin rate-limited).
 
 If the database is a Supabase project (instead of Render-managed Postgres):
 
-- **Connection for Alembic**: use the **direct** connection or the **session
-  pooler** (port `5432`).  The **transaction pooler** (`6543`, PgBouncer) cannot
-  hold the sessions/prepared statements Alembic needs.  Run `alembic upgrade
-  head` against the direct/session URL.
-- **Connection for the app**: the async engine tolerates the transaction pooler
-  (`6543`) — `app/db/session.py` sets `statement_cache_size=0` for it to avoid
-  the `prepared statement … does not exist` PgBouncer error.  The session pooler
-  also works if you prefer it.
+- **Connection for Alembic → `MIGRATION_DATABASE_URL`:** use the Supavisor
+  **session mode** URL — pooler host
+  (`<project>-<region>.pooler.supabase.com`), **port `5432`**, IPv4
+  compatible:
+  ```
+  postgresql://<user>:<pass>@<project>-<region>.pooler.supabase.com:5432/postgres
+  ```
+  Set it as `MIGRATION_DATABASE_URL` (§ "Render environment"), *not* as
+  `DATABASE_URL`, so Alembic and the app can point at different endpoints.
+  `migrations/env.py` prefers `MIGRATION_DATABASE_URL` and falls back to
+  `DATABASE_URL` when it is unset.  **Never** use:
+  - the **transaction pooler** (`6543`) — PgBouncer multiplexes sessions and
+    cannot hold the prepared statements/locks Alembic needs;
+  - the **direct host** (`db.<ref>.supabase.co`) when it is IPv6-only and the
+    build/runtime environment is IPv4 — connections simply time out.
+- **Connection for the app → `DATABASE_URL`:** the async engine tolerates the
+  transaction pooler (`6543`) — `app/db/session.py` sets
+  `statement_cache_size=0` for it to avoid the
+  `prepared statement … does not exist` PgBouncer error (that setting is
+  applied automatically whenever the URL's port is `6543`).  The session
+  pooler (port `5432`) also works if you prefer it, in which case
+  `MIGRATION_DATABASE_URL` can be left unset and migrations reuse the same
+  URL.
 - **Row Level Security**: the admin-console migration enables RLS (no policies)
   on **every** table in the `public` schema.  The backend connects as the table
   **owner**, which bypasses RLS, so the API keeps working; the Supabase

@@ -9,15 +9,23 @@ Key points:
 * All model modules are imported here (``users``, ``objectives``,
   ``roadmap_days``, ``system_prompts``) so their ``Base``-inheriting
   tables/enums are registered on the metadata before autogenerate runs.
-* The connection URL is NOT hardcoded: it is read from
+* The connection URL is NOT hardcoded: it prefers
+  ``MIGRATION_DATABASE_URL`` when set and falls back to
   ``app.core.config.get_settings().database_url`` (which honours the
-  ``DATABASE_URL`` environment variable / ``.env`` file), matching the
-  URL used by the application's async engine in ``app.db.session``.
+  ``DATABASE_URL`` environment variable / ``.env`` file).
+* Why the override exists: with Supabase the *app* may connect through the
+  transaction pooler (port ``6543``) while migrations must go through the
+  Supavisor **session** mode URL (pooler host, port ``5432``, IPv4
+  compatible) — never the transaction pooler (``6543``) and not the
+  IPv6-only direct host.  ``MIGRATION_DATABASE_URL`` lets the operator
+  point Alembic at the session-mode URL while the app keeps using
+  ``DATABASE_URL`` (see DEPLOY.md → "Render environment").
 * The environment uses Alembic's ``async_engine_from_config`` support so
   migrations run against the same ``postgresql+asyncpg`` URL the app uses.
 """
 
 import asyncio
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -60,13 +68,41 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Apply the application's resolved database URL (from env / .env) so the
-# migration run targets the same database as the running app.  Overriding
-# here keeps the migrations stack in sync with the async engine used by
-# the API.
+
+def _async_url(url: str) -> str:
+    """Rewrite a bare ``postgres(ql)://`` URL onto the ``asyncpg`` scheme.
+
+    ``MIGRATION_DATABASE_URL`` is read raw from the environment (Supabase
+    hands out plain ``postgresql://`` strings), so it needs the same
+    normalisation the app's ``database_url`` field already applies.
+    """
+    for scheme in ("postgresql+asyncpg://", "postgres://", "postgresql://"):
+        if url.startswith(scheme):
+            return f"postgresql+asyncpg://{url[len(scheme) :]}"
+    return url
+
+
+def resolve_migration_url() -> str:
+    """Return the database URL Alembic must migrate.
+
+    ``MIGRATION_DATABASE_URL`` wins when set (Supabase session-mode URL);
+    otherwise the application's own ``DATABASE_URL`` is used so the
+    migration run stays in sync with the async engine in
+    :mod:`app.db.session`.
+    """
+    override = os.getenv("MIGRATION_DATABASE_URL", "").strip()
+    if override:
+        return _async_url(override)
+    return _async_url(get_settings().database_url or "")
+
+
+# Apply the resolved migration URL so the migration run targets the right
+# database.  ``%`` is escaped because Alembic stores the value in a
+# ConfigParser section with interpolation enabled (passwords may contain
+# ``%``); the unescaping happens on read.
 config.set_main_option(
     "sqlalchemy.url",
-    get_settings().database_url,
+    resolve_migration_url().replace("%", "%%"),
 )
 
 # Set the target metadata to the app's declarative base metadata.  This
