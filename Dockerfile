@@ -13,14 +13,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # ── Dependency layer (cached unless requirements.txt changes) ──────────────────
 # requirements.txt mirrors pyproject.toml's [project.dependencies] and is the
-# source of truth for the Docker build's dependency layer.  This layer is
-# cached across application code changes — rebuilds only trigger when the
-# dependency list itself changes.  ``-c constraints.txt`` (when present)
-# pins the versions proven to work together so an upstream release cannot
-# break the build; ``--no-cache-dir`` keeps the layer slim.
-COPY requirements.txt ./
-COPY constraints.txt* ./
-RUN pip install --no-cache-dir --no-compile -r requirements.txt $([ -f constraints.txt ] && echo '-c constraints.txt')
+# source of truth for the Docker build's dependency layer; constraints.txt
+# (generated with ``pip freeze`` from a known-good image build) pins the exact
+# versions proven to work together so an upstream release cannot break the
+# build.  This layer is cached across application code changes — rebuilds only
+# trigger when either file itself changes.  ``--no-cache-dir`` keeps it slim.
+COPY requirements.txt constraints.txt ./
+RUN pip install --no-cache-dir --no-compile -c constraints.txt -r requirements.txt
 
 # ── Application layer ─────────────────────────────────────────────────────────
 # Copy the full application tree (app/, migrations/, alembic.ini, …).
