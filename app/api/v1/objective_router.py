@@ -19,11 +19,13 @@ Architecture:
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_session, require_db_user
-from app.clients.ai_client import GroqAIClient
+from app.api.deps import get_ai_router, get_entitlement, get_session, require_db_user
+from app.clients.ai_router import AIRouter
 from app.commands.register_objective_command import RegisterObjectiveCommand
 from app.schemas.objective_schemas import ObjectiveResponse, RegisterObjectiveRequest
 from app.services.objective_service import ObjectiveService
+from app.services.subscription_service import Entitlement
+from app.utils.request import current_user_id
 
 # Create a sub-router with the ``/objectives`` prefix and ``objectives`` tag.
 router = APIRouter(prefix="/objectives", tags=["objectives"])
@@ -52,7 +54,7 @@ async def list_objectives(
     """
     service = ObjectiveService(session)
     results = await service.list_by_user(
-        user_id=int(current_user["id"]),
+        user_id=current_user_id(current_user),
         offset=offset,
         limit=limit,
     )
@@ -64,6 +66,8 @@ async def register_objective(
     payload: RegisterObjectiveRequest,
     current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
+    ai_router: AIRouter = Depends(get_ai_router),
+    entitlement: Entitlement = Depends(get_entitlement),
 ) -> ObjectiveResponse:
     """Create a new objective for the authenticated user.
 
@@ -87,13 +91,13 @@ async def register_objective(
         HTTPException(400): If ``due_date`` is in the past.
         HTTPException(401): If the user is not authenticated.
     """
-    service = ObjectiveService(session, ai_client=GroqAIClient())
+    service = ObjectiveService(session, ai_client=ai_router)
     command = RegisterObjectiveCommand(
         title=payload.title,
         description=payload.description,
         due_date=payload.due_date,
     )
-    result = await service.register(command, user_id=int(current_user["id"]))
+    result = await service.register(command, user_id=current_user_id(current_user), plan_tier=entitlement.plan)
     return ObjectiveResponse(**result)
 
 
@@ -102,6 +106,8 @@ async def renew_objective_roadmap(
     objective_id: int = Path(..., ge=1),
     current_user: dict = Depends(require_db_user),
     session: AsyncSession = Depends(get_session),
+    ai_router: AIRouter = Depends(get_ai_router),
+    entitlement: Entitlement = Depends(get_entitlement),
 ) -> ObjectiveResponse:
     """Renew an objective's roadmap for the next 7-day window.
 
@@ -125,10 +131,11 @@ async def renew_objective_roadmap(
         HTTPException(404): If the objective does not exist.
         HTTPException(409): If the 7-day window has not elapsed yet.
     """
-    service = ObjectiveService(session, ai_client=GroqAIClient())
+    service = ObjectiveService(session, ai_client=ai_router)
     result = await service.renew_roadmap(
         objective_id=objective_id,
-        user_id=int(current_user["id"]),
+        user_id=current_user_id(current_user),
         role=str(current_user.get("role", "")),
+        plan_tier=entitlement.plan,
     )
     return ObjectiveResponse(**result)

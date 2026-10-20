@@ -5,6 +5,8 @@ Follows the same repository pattern as :mod:`app.repositories.objective_reposito
 — isolating SQLAlchemy queries behind a simple, testable interface.
 """
 
+from collections.abc import Sequence
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +32,7 @@ class RoadmapDayRepository:
         day_date,
         status: RoadmapDayStatus = RoadmapDayStatus.PENDING,
         content: str | None = None,
+        commit: bool = True,
     ) -> RoadmapDay:
         """Create and persist a single roadmap day.
 
@@ -39,6 +42,10 @@ class RoadmapDayRepository:
             day_date: Calendar date the day refers to.
             status: Initial status of the day.
             content: Optional basic meta / minimum objective for the day.
+            commit: Whether to commit immediately.  Pass ``False`` to let an
+                outer transaction (e.g. the objective + roadmap-day write in
+                :meth:`app.services.objective_service.ObjectiveService.register`)
+                own the commit, so both parts land or neither does.
 
         Returns:
             The newly created :class:`RoadmapDay` instance.
@@ -51,23 +58,36 @@ class RoadmapDayRepository:
             content=content,
         )
         self.session.add(day)
-        await self.session.commit()
-        await self.session.refresh(day)
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return day
 
-    async def create_many(self, days: list[RoadmapDay]) -> list[RoadmapDay]:
+    async def create_many(self, days: list[RoadmapDay], commit: bool = True) -> list[RoadmapDay]:
         """Persist a batch of roadmap days in a single transaction.
+
+        No per-row ``refresh`` is issued.  SQLAlchemy populates the primary
+        key of every inserted row during the flush (and the session is built
+        with ``expire_on_commit=False``), so re-reading each row back would
+        cost one extra ``SELECT`` per day — seven wasted round-trips for every
+        roadmap window, on a path that already calls the AI provider.
 
         Args:
             days: A list of unsaved :class:`RoadmapDay` instances.
+            commit: Whether to commit the batch.  ``False`` leaves the rows
+                pending inside the caller's transaction.
 
         Returns:
             The same instances with IDs populated.
         """
+        if not days:
+            return days
         self.session.add_all(days)
-        await self.session.commit()
-        for day in days:
-            await self.session.refresh(day)
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return days
 
     async def get_by_id(self, day_id: int) -> RoadmapDay | None:
@@ -90,6 +110,39 @@ class RoadmapDayRepository:
         )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_by_objectives(self, objective_ids: Sequence[int]) -> dict[int, list[RoadmapDay]]:
+        """Return the roadmap days of several objectives with **one** query.
+
+        Rendering a page of objectives needs the days of every row on the
+        page.  Fetching them per objective is the classic N+1: 20 objectives
+        become 21 round-trips, and each one costs latency the user waits
+        through.  This does a single ``IN (...)`` query and groups the rows
+        in Python, so the round-trip count stops growing with the page size.
+
+        Args:
+            objective_ids: The objective ids to load days for.  An empty
+                sequence performs no query at all.
+
+        Returns:
+            ``{objective_id: [day, ...]}`` — days in the same calendar order
+            :meth:`list_by_objective` guarantees.  Objectives without any day
+            are simply absent from the mapping.
+        """
+        if not objective_ids:
+            return {}
+
+        stmt = (
+            select(RoadmapDay)
+            .where(RoadmapDay.objective_id.in_(list(dict.fromkeys(objective_ids))))
+            .order_by(RoadmapDay.objective_id, RoadmapDay.day_date, RoadmapDay.day_number)
+        )
+        result = await self.session.execute(stmt)
+
+        grouped: dict[int, list[RoadmapDay]] = {}
+        for day in result.scalars().all():
+            grouped.setdefault(day.objective_id, []).append(day)
+        return grouped
 
     async def update_status(
         self,
@@ -117,3 +170,20 @@ class RoadmapDayRepository:
         await self.session.commit()
         await self.session.refresh(day)
         return day
+
+    async def delete(self, day_id: int) -> bool:
+        """Hard-delete a roadmap day by its ID.
+
+        Args:
+            day_id: ID of the roadmap day to remove.
+
+        Returns:
+            ``True`` if the day was deleted, ``False`` if no day with
+            the given ID exists.
+        """
+        day = await self.get_by_id(day_id)
+        if day is None:
+            return False
+        await self.session.delete(day)
+        await self.session.commit()
+        return True

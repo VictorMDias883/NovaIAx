@@ -1,8 +1,13 @@
 # NovaIAx API Reference
 
 Reference for the backend HTTP endpoints used by the NovaIAx mobile app and
-admin tooling. This document is **read-only documentation** — it does not
-modify any code.
+the admin tooling.  Generated from the running application's OpenAPI schema
+(`openapi.json`) plus the conventions enforced across the codebase.
+
+> This document is **read-only documentation**; it does not modify any code.
+> The endpoint catalog at the end is generated from `app.openapi()`, so it is
+> always in sync with the routers.  Regenerate both files with
+> `python scripts/export_openapi.py` (see `README.md`).
 
 ---
 
@@ -10,11 +15,13 @@ modify any code.
 
 ### Base URLs
 
-| Area            | Base                    | Format       |
-|-----------------|-------------------------|--------------|
-| JSON API (v1)   | `/api/v1`               | `application/json` |
-| Admin panel     | `/admin`                | Server-rendered HTML (forms + cookies) |
-| Static (admin)  | `/admin/static/...`     | CSS assets    |
+| Area           | Base                 | Format      |
+|----------------|----------------------|-------------|
+| JSON API (v1)  | `/api/v1`            | `application/json` |
+| Health probe   | `/health`            | `application/json` |
+| Public pages   | `/privacy`, `/terms`, `/account-deletion` | Server-rendered HTML |
+| Admin panel    | `/admin`             | Server-rendered HTML (forms + cookies) |
+| Static (admin) | `/admin/static/...`  | CSS assets  |
 
 ### Authentication
 
@@ -23,749 +30,538 @@ Two credential schemes exist; which one is accepted depends on the route:
 1. **JWT Bearer token** (`Authorization: Bearer <access_token>`) — the
    universal scheme, obtained from `POST /api/v1/auth/register` or
    `POST /api/v1/auth/login`.
-   - Access token TTL: **15 minutes** (`access_token_ttl_minutes`).
-   - Refresh token TTL: **7 days** (`refresh_token_ttl_days`).
+   - Access token TTL: **15 minutes**.
+   - Refresh token TTL: **7 days**.
    - Only tokens with `type == "access"` are accepted; refresh tokens and
      revoked (logged-out) `jti`s are rejected with `401`.
-2. **API key** (`X-API-Key: <key>`) — master key or a registered hashed key
-   (backed by Redis). Authenticates as a `SERVICE`-role identity.
+2. **API key** (`X-API-Key: <key>`) — the master key or a registered hashed
+   key (backed by Redis).  Authenticates as a `SERVICE`-role identity.
 
 - **Service-to-service (proxy) endpoints** accept either scheme.
 - **User-scoped endpoints** (anything that loads or creates data tied to a
-  database user — `/auth/me`, `/objectives/*`, roadmap days, the assistant,
-  agents and chat) require a **JWT**. An API-key identity is rejected with a
-  clean `403` `{"detail": "API-key authentication cannot be used on this endpoint"}`
-  instead of crashing.
-
-The public auth endpoints (`/api/v1/auth/register`, `/login`, `/refresh`,
-`/logout`) do **not** require any auth header. The admin panel uses its own
-httpOnly session cookie instead of headers.
+  database user) require a **JWT**.  An API-key identity is rejected with a
+  clean `403`.
+- The public auth endpoints (`/auth/register`, `/login`, `/refresh`,
+  `/logout`) and the billing RTDN push path
+  (`POST /api/v1/billing/google/rtdn`, called by Google, not a user) do **not**
+  require an auth header.
 
 ### Roles
 
-`role` is one of: `USER`, `ADMIN`, `SERVICE`.
+`role` is one of `USER`, `ADMIN`, `SERVICE`.
 
-- The **first registered user** in a fresh database becomes `ADMIN`; all
-  later registrations become `USER`.
-- `USER`-only vs `ADMIN`-only capabilities are noted per endpoint.
+- In development the **first registered user** in a fresh database becomes
+  `ADMIN`; later registrations become `USER`.  This bootstrap is **disabled in
+  production** (`FIRST_USER_ADMIN` is forced off when `ENVIRONMENT=production`).
+- Admin-only capabilities are noted per endpoint.
+
+### Error envelope (uniform `{detail, code}`)
+
+Every error response is a JSON object with **two** fields:
+
+```json
+{ "detail": "<mensagem em pt-BR>", "code": "<stable_machine_code>" }
+```
+
+- `detail` is always **pt-BR** and is meant for display.  It may change.
+- `code` is **stable** and is what the app must switch on.  It is present on
+  *every* error, including plain `HTTPException`s whose code is derived from
+  the status.
+
+Generic codes (from `app/exceptions/api_errors.py`):
+
+| HTTP | `code` | Meaning |
+|------|--------|---------|
+| 400  | `bad_request` | Malformed request that is not a validation error |
+| 401  | `authentication_required` | Missing/expired token |
+| 401  | `invalid_credentials` | Wrong email or password |
+| 403  | `forbidden` | Authenticated but not allowed |
+| 404  | `not_found` | Resource does not exist (or is not the caller's) |
+| 409  | `conflict` | Unique-constraint / state conflict |
+| 413  | `payload_too_large` | Body over the limit |
+| 422  | `validation_error` | Request failed schema validation |
+| 429  | `rate_limit_exceeded` | Per-IP rate limit hit |
+| 500  | `internal_error` | Unhandled server error |
+| 502/503 | `service_unavailable` | Dependency unavailable |
+
+AI-provider codes (from `app/exceptions/ai_errors.py`):
+
+| HTTP | `code` | Meaning |
+|------|--------|---------|
+| 429  | `ai_rate_limited` | Provider rate limited the request |
+| 429  | `ai_busy` | Concurrency queue saturated |
+| 429  | `ai_quota_exceeded` | The **user's** daily AI budget is spent |
+| 504  | `ai_provider_timeout` | Provider did not answer in time |
+| 502  | `ai_provider_error` | Provider returned an error |
+| 502  | `ai_provider_auth_failed` | Provider rejected the API key |
+| 502  | `ai_invalid_response` | Provider answer could not be parsed |
+| 502  | `ai_all_providers_failed` | No provider could serve the request |
+
+Plan/billing codes (from `app/exceptions/plan_errors.py`):
+
+| HTTP | `code` | Meaning |
+|------|--------|---------|
+| 402  | `plan_upgrade_required` | Feature needs a higher plan |
+| 402  | `plan_feature_locked` | Feature not included in the plan |
+| 402  | `plan_limit_reached` | Plan quota exhausted |
+| 403  | `subscription_inactive` | Subscription is not active |
+| 503  | `billing_unavailable` | Billing backend not configured |
+| 400  | `purchase_invalid` | Purchase verification failed |
+
+### Validation errors
+
+Schema validation failures (`422`) use a **fixed** body:
+
+```json
+{ "detail": "Requisição inválida.", "code": "validation_error" }
+```
+
+The per-field breakdown is intentionally not exposed; the app should treat any
+`422` as a client bug and fix its payload, not parse field errors.
+
+### Pagination
+
+List endpoints that paginate return the same envelope:
+
+```json
+{ "items": [ ... ], "page": 1, "limit": 20, "total": 42 }
+```
+
+`page` is 1-based; `limit` is capped per endpoint (usually 100).  Endpoints
+noted below as returning a bare list/object are the deliberate exceptions kept
+for **backward compatibility** with the shipped mobile app.
+
+#### Per-endpoint pagination
+
+Paths are relative to `/api/v1`.  "Envelope" is the shape returned; all
+paginated endpoints accept `page` (`ge=1`) and `limit` unless noted.  Filter
+params are listed for completeness — they combine with pagination.
+
+| Endpoint | Query params | Default `limit` | Max `limit` | Envelope |
+|----------|--------------|-----------------|-------------|----------|
+| `GET /objectives/` | `offset`, `limit` | 50 | 100 | **bare array** (legacy) |
+| `GET /objectives/{id}/roadmap/days` | — | — | — | `{objective_id, days}` |
+| `GET /me/tasks` | `page`, `limit`, `status`, `priority`, `due_from`, `due_to` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/reminders` | `page`, `limit`, `status`, `from`, `to` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/notes` | `page`, `limit`, `tag`, `pinned` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/checklists` | `page`, `limit`, `category` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/habits` | `page`, `limit` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/focus-sessions` | `page`, `limit`, `from`, `to` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/medications` | `page`, `limit`, `active` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/medication-intakes` | `page`, `limit`, `medication_id`, `status`, `from`, `to` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/finance/expenses` | `page`, `limit`, `category`, `from`, `to` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/finance/incomes` | `page`, `limit`, `from`, `to` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/finance/bills` | `page`, `limit`, `status`, `due_from`, `due_to` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/finance/budgets` | `month` | — | — | `{month, items}` (one month, unpaginated) |
+| `GET /me/study/plans` | `page`, `limit`, `status` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/study/decks` | `page`, `limit` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /me/study/decks/{id}/cards` | `page`, `limit`, `due_only` | 50 | 100 | `{items, page, limit, total}` |
+| `GET /me/logs` | `page`, `limit`, `kind`, `from`, `to` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /community/reports` | `page`, `limit`, `category` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /community/drafts` | `page`, `limit` | 20 | 100 | `{items, page, limit, total}` |
+| `GET /community/official-contacts` | `category` | — | — | `{items}` (unpaginated) |
+| `GET /community/blocks` | — | — | — | `{items}` (unpaginated) |
+| `GET /community/support` | — | — | — | `{items}` (static, unpaginated) |
+| `GET /me/consents` | — | — | — | `{consents}` (full log, unpaginated) |
+| `GET /agent-groups` | — | — | — | **bare array** |
+| `GET /sub-agents` | — | — | — | **bare array** |
+| `GET /me/memories` | — | — | — | **bare array** |
+| `GET /system-prompts/` | `page`, `limit` | 50 | 100 | `{items, page, limit, total}` |
+| `GET /users/` (admin) | `page`, `limit` | 20 | 100 | `{items, page, limit, total}` |
+
+`GET /objectives/` is the **only** list endpoint that uses `offset` instead of
+`page` and returns a bare array; treat it specially (§2).  The four bare-array
+endpoints (`/objectives/`, `/agent-groups`, `/sub-agents`, `/me/memories`) are
+frozen for the shipped app and must not be wrapped in an envelope.
+
+### Timestamps, ids, naming
+
+- Timestamps are **ISO-8601 UTC with a `Z` suffix** (for example
+  `2026-01-31T14:05:00Z`).
+- All ids are **integers**.
+- JSON field names are **`snake_case`**.
+- Booleans are real JSON booleans (never `"true"`/`1`).
 
 ### Rate limiting
 
-Sliding 60-second window, keyed by client IP, enforced by
-`RateLimitMiddleware` on **every** non-`/health` request:
+Sliding 60-second window enforced by `RateLimitMiddleware` on every
+non-`/health` request:
 
-| Bucket | Limit | Applies to paths containing |
-|--------|-------|------------------------------|
-| Default | 60 req/min | everything |
-| AI (strict) | 8 req/min | `/ai/`, `/agents/general`, `/objectives/assistant`, `/objectives/register`, or `/roadmap/renew` (every endpoint that makes an AI-provider call: `POST /api/v1/ai/chat`, `/agents/general/chat`, `/objectives/assistant`, `/objectives/register`, `/objectives/{id}/roadmap/renew`, and `/api/v1/proxy/ai/...`) |
+| Bucket | Limit | Key | Applies to |
+|--------|-------|-----|-----------|
+| Default | 60 req/min | client IP | everything |
+| AI (strict) | 10 req/min | client IP | paths containing `/ai/`, `/agents/general`, `/agents/device`, `/agents/chat`, `/objectives/assistant`, `/objectives/register`, `/roadmap/renew`, `/me/weekly-plan` |
+| AI (per user) | 8 req/min | authenticated user id | the same AI paths once a valid JWT is present |
+| Auth lockout | 5 failed logins / 15 min | email + client IP | `POST /api/v1/auth/login` |
 
-On exceeding the limit:
+The per-user AI bucket (`RATE_LIMIT_AI_USER`) is applied instead of the per-IP
+one whenever the request carries a valid access token, so one user cannot
+exhaust the shared IP allowance.
 
-- **429** — `{"detail": "Too Many Requests"}` with `X-RateLimit-Limit`,
-  `X-RateLimit-Remaining` and `Retry-After: 60` headers.
-- If Redis is unreachable the limiter falls back to permissive (does not block).
-
-### AI-provider (Groq) guardrails
-
-Groq's free tier is shared across the *whole organization* — every key and
-process counts toward the same buckets (e.g. `openai/gpt-oss-120b`:
-**30 req/min / 1K req/day / 8K tokens/min / 200K tokens/day**), and **every
-attempt, even a failed one, consumes quota**. To stay inside those limits:
-
-- A **process-wide pacer** queues outgoing Groq traffic (default
-  `groq_rate_limit_rpm=20`, `groq_token_budget_per_minute=6000`) and a
-  **concurrency semaphore** (`groq_max_concurrency=2`) prevents bursts; a
-  request that would exceed the budget waits instead of firing.
-- **No automatic retries by default** (`groq_max_attempts=1`) — an internal
-  retry loop cannot outlast the provider's per-minute window and only
-  multiplies the org quota spent. When retries are explicitly enabled
-  (`GROQ_MAX_ATTEMPTS>1`) they use exponential backoff and honor Groq's
-  `Retry-After` header.
-- Responses are capped at `groq_max_output_tokens=1024` tokens.
-- Every outgoing call is logged (`groq_request_start`/`groq_request_end`
-  with timestamp, request id, model, attempt, estimated tokens and status).
-- A provider throttling surfaces to the caller as a **`429`** whose `detail`
-  includes the exact limit from Groq's error body, plus a `Retry-After`
-  header (mirrored from `x-ratelimit-reset-*`), instead of a generic `502`.
-
-Defaults can be tuned via `GROQ_RATE_LIMIT_RPM`, `GROQ_TOKEN_BUDGET_PER_MINUTE`,
-`GROQ_MAX_CONCURRENCY`, `GROQ_MAX_ATTEMPTS` and `GROQ_MAX_OUTPUT_TOKENS`.
-Note: the pacer is per-process, so scale out (more workers) only if the org
-limits — and shared REDIS — can absorb the aggregate volume.
-
-### Error response shape
-
-All JSON errors use the same envelope: **`{"detail": "<message>"}`**.
-
-| Status | When | Shape |
-|--------|------|-------|
-| 401 | Missing/invalid/revoked credentials | `{"detail": "Authentication required"}` / `{"detail": "Invalid token"}` / `{"detail": "Invalid token type"}` / `{"detail": "Token has been revoked"}` |
-| 403 | Authenticated but not allowed | `{"detail": "Not authorized"}` |
-| 422 | Request body fails Pydantic validation | `{"detail": "Invalid request"}` (details intentionally hidden) |
-| 429 | Rate limit exceeded | `{"detail": "Too Many Requests"}` |
-| 5xx | Unhandled error | `{"detail": "Internal server error"}` |
-
-### Date/time
-
-Datetimes are ISO-8601 strings (e.g. `"2026-09-18T12:00:00Z"`), timezone-aware.
+On exceeding the limit: **429**
+`{"detail": "<pt-BR>", "code": "rate_limit_exceeded"}` with
+`X-RateLimit-Limit`, `X-RateLimit-Remaining` and `Retry-After` headers.  If
+Redis is unreachable the IP limiter falls back to permissive.
 
 ---
 
-## 2. Auth
+## 2. Backward-compatibility notes (mobile contract)
 
-Base: `/api/v1/auth` · All JSON · No auth header required (except `/me`).
-
-### 2.1 POST `/api/v1/auth/register`
-
-Registers a new user; the first user ever registered becomes `ADMIN`.
-
-**Request body** (required fields marked *):
-
-| Field      | Type   | Required | Constraints |
-|------------|--------|----------|-------------|
-| `full_name`| string | *        | 2–120 chars |
-| `email`    | string | *        | Valid email |
-| `password` | string | *        | 8–128 chars; must contain ≥1 digit and ≥1 uppercase letter |
-
-**Success — `201`**
-
-```json
-{
-  "user":        { "id": 1, "full_name": "Ana", "email": "ana@x.com", "role": "USER" },
-  "access_token": "<jwt>",
-  "refresh_token": "<jwt>"
-}
-```
-
-| Field | Type |
-|-------|------|
-| `user.id` | int |
-| `user.full_name` | string |
-| `user.email` | string |
-| `user.role` | string (`"USER"`/`"ADMIN"`/`"SERVICE"`) |
-| `access_token` | string (JWT, 15 min) |
-| `refresh_token` | string (JWT, 7 days) |
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 409 | `{"detail": "User already exists"}` | Email already registered |
-| 422 | `{"detail": "Invalid request"}` | Password rules/validation failed |
-
-### 2.2 POST `/api/v1/auth/login`
-
-Authenticates and returns a fresh token pair.
-
-**Request body**
-
-| Field | Type   | Required | Notes |
-|-------|--------|----------|-------|
-| `email` | string | * | Valid email |
-| `password` | string | * | ≥1 char |
-
-**Success — `200`** — same `AuthResponse` shape as 2.1.
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 401 | `{"detail": "Invalid credentials"}` | Wrong email or password |
-| 422 | `{"detail": "Invalid request"}` | Schema validation |
-
-### 2.3 POST `/api/v1/auth/refresh`
-
-Exchanges a refresh token for a new access/refresh pair.
-
-> **Token rotation (single-use refresh):** the presented refresh token is
-> revoked — its `jti` is added to the denylist for its remaining TTL — and a
-> fresh pair is issued. Reusing a previously-refreshed token returns `401`.
-
-**Request body**
-
-| Field | Type   | Required |
-|-------|--------|----------|
-| `refresh_token` | string | * |
-
-**Success — `200`**
-
-```json
-{ "access_token": "<jwt>", "refresh_token": "<jwt>" }
-```
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 401 | `{"detail": "Invalid refresh token"}` | Missing/non-`refresh`/expired/revoked token |
-| 422 | `{"detail": "Invalid request"}` | Empty `refresh_token` |
-
-### 2.4 POST `/api/v1/auth/logout`
-
-Revokes the presented refresh token — and, when supplied, the access token —
-by adding their `jti`s to a Redis denylist for the tokens' remaining TTL.
-
-**Request body**
-
-| Field | Type   | Required |
-|-------|--------|----------|
-| `refresh_token` | string | * |
-| `access_token` | string | no (when supplied, revokes the access `jti` too) |
-
-**Success — `200`**
-
-```json
-{ "access_token": "", "refresh_token": "" }
-```
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 401 | `{"detail": "Invalid refresh token"}` | Token invalid/unparsable |
-| 422 | `{"detail": "Invalid request"}` | Empty `refresh_token` |
-
-### 2.5 GET `/api/v1/auth/me`
-
-Returns the identity of the authenticated user (from the token).
-
-**Required headers:** `Authorization: Bearer <access_token>`. An `X-API-Key`
-identity is rejected with `403` (see §1 Authentication).
-
-**Success — `200`**
-
-```json
-{ "id": 1, "full_name": "Ana", "email": "ana@x.com", "role": "USER" }
-```
-
-| Field | Type |
-|-------|------|
-| `id` | int |
-| `full_name` | string |
-| `email` | string |
-| `role` | string |
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 401 | `{"detail": "Authentication required"}` / `{"detail": "Invalid token"}` | No credentials / bad token |
-| 403 | `{"detail": "API-key authentication cannot be used on this endpoint"}` | Authenticated with `X-API-Key` instead of a JWT |
-| 429 | `{"detail": "Too Many Requests"}` | Rate limit |
+| Endpoint | Behavior | Why |
+|----------|----------|-----|
+| `GET /api/v1/objectives/` | Returns a **bare array**, not `{items,...}` | Shipped app expects an array; documented deviation from the pagination rule |
+| `GET /api/v1/objectives/{id}/roadmap/days` | Returns `{objective_id, days}` | Roadmap is fetched as a whole, not paginated |
+| All error bodies | Gained `code`; `detail` text changed to pt-BR | Additive: clients reading only `detail` still work |
 
 ---
 
-## 3. Objectives (Goals)
+## 3. Endpoint catalog
 
-Base: `/api/v1/objectives` · All JSON · All require auth.
+Grouped by OpenAPI tag.  Every path is relative to the server root; the v1
+JSON API is under `/api/v1`.  This whole section is **generated** from
+`app.openapi()` by `python scripts/export_openapi.py` — do not edit it by hand.
 
-**Shared types**
+<!-- BEGIN:endpoint-catalog -->
+### `admin`
 
-`ObjectiveResponse`:
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/admin/` | Dashboard | — | — | 200 `JSON` |
+| `GET` | `/admin/agents` | Agents Page | `tab` (query, string, optional) | — | 200 `JSON` |
+| `POST` | `/admin/agents/test` | Agent Preview | — | — | 200 `JSON` |
+| `POST` | `/admin/agents/{entity}` | Agent Create | `entity` (path, string, required) | — | 200 `JSON` |
+| `GET` | `/admin/agents/{entity}/new` | Agent New Page | `entity` (path, string, required) | — | 200 `JSON` |
+| `POST` | `/admin/agents/{entity}/{item_id}` | Agent Update | `entity` (path, string, required), `item_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/agents/{entity}/{item_id}/duplicate` | Agent Duplicate | `entity` (path, string, required), `item_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/agents/{entity}/{item_id}/edit` | Agent Edit Page | `entity` (path, string, required), `item_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/agents/{entity}/{item_id}/rollback` | Agent Rollback | `entity` (path, string, required), `item_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/agents/{entity}/{item_id}/toggle` | Agent Toggle | `entity` (path, string, required), `item_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/agents/{entity}/{item_id}/versions` | Agent Versions Page | `entity` (path, string, required), `item_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/audit` | Audit Page | `page` (query, integer, optional), `action` (query, string, optional), `entity` (query, string, optional), `admin_id` (query, integer, optional) | — | 200 `JSON` |
+| `GET` | `/admin/login` | Login Page | — | — | 200 `JSON` |
+| `POST` | `/admin/login` | Login Submit | — | — | 200 `JSON` |
+| `POST` | `/admin/logout` | Logout | — | — | 200 `JSON` |
+| `GET` | `/admin/promotions` | Promotions Page | `tab` (query, string, optional) | — | 200 `JSON` |
+| `POST` | `/admin/promotions` | Create Promotion | — | — | 200 `JSON` |
+| `POST` | `/admin/promotions/codes` | Create Promo Code | — | — | 200 `JSON` |
+| `GET` | `/admin/promotions/codes/export` | Export Promo Codes | — | — | 200 `JSON` |
+| `POST` | `/admin/promotions/codes/generate` | Generate Promo Codes | — | — | 200 `JSON` |
+| `GET` | `/admin/promotions/codes/{code_id}` | Promo Code Detail Page | `code_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/promotions/codes/{code_id}` | Update Promo Code | `code_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/promotions/codes/{code_id}/toggle` | Toggle Promo Code | `code_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/promotions/grants` | Grants Page | — | — | 200 `JSON` |
+| `POST` | `/admin/promotions/grants` | Grant Plan To User | — | — | 200 `JSON` |
+| `GET` | `/admin/promotions/new` | Promotion New Page | — | — | 200 `JSON` |
+| `POST` | `/admin/promotions/{promotion_id}` | Update Promotion | `promotion_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/promotions/{promotion_id}/delete` | Delete Promotion | `promotion_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/promotions/{promotion_id}/edit` | Promotion Edit Page | `promotion_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/promotions/{promotion_id}/toggle` | Toggle Promotion | `promotion_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/reports` | Reports Page | `page` (query, integer, optional), `status` (query, string, optional) | — | 200 `JSON` |
+| `POST` | `/admin/reports/{report_id}/status` | Moderate Report | `report_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/security/totp` | Totp Page | — | — | 200 `JSON` |
+| `POST` | `/admin/security/totp` | Totp Enroll | — | — | 200 `JSON` |
+| `POST` | `/admin/security/totp/disable` | Totp Disable | — | — | 200 `JSON` |
+| `GET` | `/admin/settings` | Settings Page | `tab` (query, string, optional) | — | 200 `JSON` |
+| `POST` | `/admin/settings/ai/{name}` | Update Ai Provider | `name` (path, string, required) | — | 200 `JSON` |
+| `POST` | `/admin/settings/app` | Update App Config | — | — | 200 `JSON` |
+| `POST` | `/admin/settings/contacts` | Create Official Contact | — | — | 200 `JSON` |
+| `POST` | `/admin/settings/contacts/{contact_id}` | Update Official Contact | `contact_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/settings/contacts/{contact_id}/delete` | Delete Official Contact | `contact_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/settings/limits/{plan}` | Update Plan Limits | `plan` (path, string, required) | — | 200 `JSON` |
+| `POST` | `/admin/settings/limits/{plan}/clear` | Clear Plan Limits | `plan` (path, string, required) | — | 200 `JSON` |
+| `GET` | `/admin/system-prompts` | Prompts Page | `page` (query, integer, optional) | — | 200 `JSON` |
+| `POST` | `/admin/system-prompts` | Create Prompt | — | — | 200 `JSON` |
+| `POST` | `/admin/system-prompts/{prompt_id}` | Update Prompt | `prompt_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/system-prompts/{prompt_id}/delete` | Delete Prompt | `prompt_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/system-prompts/{prompt_id}/edit` | Edit Prompt Page | `prompt_id` (path, integer, required) | — | 200 `JSON` |
+| `GET` | `/admin/users` | Users Page | `page` (query, integer, optional), `q` (query, string, optional) | — | 200 `JSON` |
+| `GET` | `/admin/users/{user_id}` | User Detail Page | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/ban` | Ban User Post | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/delete` | Delete User | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/demote` | Demote User | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/force-logout` | Force Logout User | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/grant` | Grant User Plan | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/promote` | Promote User | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/suspend` | Suspend User | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/unban` | Unban User Post | `user_id` (path, integer, required) | — | 200 `JSON` |
+| `POST` | `/admin/users/{user_id}/unsuspend` | Unsuspend User | `user_id` (path, integer, required) | — | 200 `JSON` |
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `id` | int | |
-| `title` | string | |
-| `description` | string \| null | |
-| `roadmap` | string \| null | AI-generated markdown roadmap for the current 7-day window |
-| `roadmap_updated_at` | datetime \| null | Last roadmap generation time |
-| `due_date` | datetime | |
-| `user_id` | int | Owner id |
-| `days` | array of `RoadmapDayResponse` | Ordered by `day_number` |
+### `agent-personalization`
 
-`RoadmapDayResponse`:
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/agent-groups` | List Agent Groups | — | — | 200 `array[AgentGroupResponse]` |
+| `GET` | `/api/v1/me/agent` | Get My Agent | — | — | 200 `UserAgentResponse` |
+| `PUT` | `/api/v1/me/agent` | Update My Agent | — | `UserAgentUpdate` | 200 `UserAgentResponse` |
+| `PUT` | `/api/v1/me/learning` | Set My Learning | — | `LearningUpdate` | 200 `LearningResponse` |
+| `GET` | `/api/v1/me/memories` | List My Memories | — | — | 200 `array[MemoryResponse]` |
+| `POST` | `/api/v1/me/memories` | Create My Memory | — | `MemoryCreate` | 201 `MemoryResponse` |
+| `DELETE` | `/api/v1/me/memories/{key}` | Delete My Memory | `key` (path, string, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/me/memories/{key}` | Update My Memory | `key` (path, string, required) | `MemoryUpdate` | 200 `MemoryResponse` |
+| `GET` | `/api/v1/sub-agents` | List Sub Agents | — | — | 200 `array[SubAgentResponse]` |
 
-| Field | Type | Notes |
-|-------|------|-------|
-| `id` | int | |
-| `objective_id` | int | |
-| `day_number` | int | 1..N inside the 7-day window |
-| `day_date` | datetime | Date the day refers to |
-| `content` | string \| null | Day's minimum objective (AI-generated) |
-| `status` | string | `"PENDING"` \| `"COMPLETED"` \| `"SKIPPED"` |
-| `completed_at` | datetime \| null | |
+### `agents`
 
-Days are returned ordered by `day_date`, then `day_number`.
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `POST` | `/api/v1/agents/actions/{action_id}/confirm` | Confirm Action | `action_id` (path, integer, required) | JSON | 200 `AgentActionResponse` |
+| `POST` | `/api/v1/agents/actions/{action_id}/reject` | Reject Action | `action_id` (path, integer, required) | JSON | 200 `AgentActionResponse` |
+| `POST` | `/api/v1/agents/actions/{action_id}/result` | Report Action Result | `action_id` (path, integer, required) | `AgentActionReportResultRequest` | 200 `AgentActionResponse` |
+| `POST` | `/api/v1/agents/chat` | Agent Chat | — | `AgentChatRequest` | 200 `AgentChatResponse` |
+| `POST` | `/api/v1/agents/device/command` | Device Command | — | `DeviceCommandRequest` | 200 `DeviceCommandResponse` |
+| `POST` | `/api/v1/agents/general/chat` | General Agent Chat | — | `GeneralAgentRequest` | 200 `GeneralAgentResponse` |
+| `DELETE` | `/api/v1/agents/general/conversation` | Clear General Agent Conversation | — | — | 200 `GeneralAgentConversationClearResponse` |
 
-### 3.1 GET `/api/v1/objectives/`
+### `ai`
 
-Lists the authenticated user's objectives (ordered by ID ascending, with
-their days).
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `POST` | `/api/v1/ai/chat` | Chat Completion | — | `ChatCompletionRequest` | 200 `ChatCompletionResponse` |
+| `DELETE` | `/api/v1/ai/chat/conversation` | Clear Chat Conversation | `agent_id` (query, integer, required) | — | 200 `ConversationClearResponse` |
+| `POST` | `/api/v1/ai/feedback` | Submit Feedback | — | `AIFeedbackRequest` | 201 `AIFeedbackResponse` |
 
-**Required headers:** auth.
+### `app-config`
 
-**Query parameters**
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/app-config` | Get App Config | — | — | 200 `JSON` |
 
-| Param | Type | Required | Default | Constraints |
-|-------|------|----------|---------|-------------|
-| `offset` | int | no | 0 | ≥0 |
-| `limit` | int | no | 50 | 1–100 |
+### `auth`
 
-**Success — `200`** — JSON **array** of `ObjectiveResponse`:
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `POST` | `/api/v1/auth/login` | Login | — | `LoginRequest` | 200 `AuthResponse` |
+| `POST` | `/api/v1/auth/logout` | Logout | — | `LogoutRequest` | 200 `TokenResponse` |
+| `GET` | `/api/v1/auth/me` | Me | — | — | 200 `app__schemas__auth__UserResponse` |
+| `POST` | `/api/v1/auth/refresh` | Refresh Tokens | — | `RefreshRequest` | 200 `TokenResponse` |
+| `POST` | `/api/v1/auth/register` | Register User | — | `RegisterUserRequest` | 201 `AuthResponse` |
 
-```json
-[
-  {
-    "id": 5,
-    "title": "Learn English",
-    "description": "Conversational fluency",
-    "roadmap": "# Week 1\n...",
-    "roadmap_updated_at": "2026-09-18T10:00:00Z",
-    "due_date": "2026-10-30T00:00:00Z",
-    "user_id": 1,
-    "days": [
-      { "id": 12, "objective_id": 5, "day_number": 1,
-        "day_date": "2026-09-18T00:00:00Z", "content": "Basic vocabulary", "status": "PENDING", "completed_at": null }
-    ]
-  }
-]
-```
+### `billing`
 
-### 3.2 POST `/api/v1/objectives/register`
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `POST` | `/api/v1/billing/google/rtdn` | Google Rtdn | — | — | 200 `RtdnResponse` |
+| `POST` | `/api/v1/billing/google/verify` | Verify Google Purchase | — | `GoogleVerifyRequest` | 200 `SubscriptionResponse` |
+| `GET` | `/api/v1/me/subscription` | Get My Subscription | — | — | 200 `SubscriptionResponse` |
 
-Creates an objective and immediately generates its first 7-day roadmap
-(via the AI provider). Synonymous with a "create goal" action.
+### `cache`
 
-**Required headers:** auth.
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `POST` | `/api/v1/cache/flush` | Flush Cache | `include_conversations` (query, boolean, optional) | — | 200 `CacheFlushResponse` |
 
-**Request body**
+### `community`
 
-| Field | Type   | Required | Constraints |
-|-------|--------|----------|-------------|
-| `title` | string | * | 2–255 chars |
-| `description` | string | no | ≤1000 chars (`null` ok) |
-| `due_date` | datetime | * | ISO-8601, must not be in the past |
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/community/blocks` | List Blocks | — | — | 200 `BlockListResponse` |
+| `POST` | `/api/v1/community/blocks` | Block User | — | `BlockCreate` | 201 `BlockResponse` |
+| `DELETE` | `/api/v1/community/blocks/{blocked_id}` | Unblock User | `blocked_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/community/drafts` | List Drafts | `page` (query, integer, optional), `limit` (query, integer, optional) | — | 200 `DraftListResponse` |
+| `POST` | `/api/v1/community/drafts` | Create Draft | — | `DraftCreate` | 201 `DraftResponse` |
+| `POST` | `/api/v1/community/drafts/generate` | Generate Draft | — | `DraftGenerateRequest` | 200 `DraftResponse` |
+| `DELETE` | `/api/v1/community/drafts/{draft_id}` | Delete Draft | `draft_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/community/drafts/{draft_id}` | Update Draft | `draft_id` (path, integer, required) | `DraftUpdate` | 200 `DraftResponse` |
+| `GET` | `/api/v1/community/official-contacts` | List Official Contacts | `category` (query, string, optional) | — | 200 `OfficialContactListResponse` |
+| `GET` | `/api/v1/community/reports` | List Reports | `page` (query, integer, optional), `limit` (query, integer, optional), `category` (query, string, optional) | — | 200 `ReportListResponse` |
+| `POST` | `/api/v1/community/reports` | Create Report | — | `ReportCreate` | 201 `ReportResponse` |
+| `DELETE` | `/api/v1/community/reports/{report_id}` | Delete Report | `report_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/community/reports/{report_id}` | Get Report | `report_id` (path, integer, required) | — | 200 `ReportResponse` |
+| `PATCH` | `/api/v1/community/reports/{report_id}` | Update Report | `report_id` (path, integer, required) | `ReportUpdate` | 200 `ReportResponse` |
+| `DELETE` | `/api/v1/community/reports/{report_id}/confirm` | Unconfirm Report | `report_id` (path, integer, required) | — | 200 `ConfirmationResponse` |
+| `POST` | `/api/v1/community/reports/{report_id}/confirm` | Confirm Report | `report_id` (path, integer, required) | — | 200 `ConfirmationResponse` |
+| `POST` | `/api/v1/community/reports/{report_id}/flag` | Flag Report | `report_id` (path, integer, required) | `FlagCreate` | 200 `FlagResponse` |
+| `POST` | `/api/v1/community/reports/{report_id}/photo` | Upload Report Photo | `report_id` (path, integer, required) | — | 200 `ReportResponse` |
+| `GET` | `/api/v1/community/support` | Support Resources | — | — | 200 `SupportResourceListResponse` |
 
-**Success — `200`** — `ObjectiveResponse` (same shape as 3.1, single object).
+### `finance`
 
-**Errors**
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/me/finance/bills` | List Bills | `page` (query, integer, optional), `limit` (query, integer, optional), `status` (query, string, optional), `due_from` (query, string, optional), `due_to` (query, string, optional) | — | 200 `BillListResponse` |
+| `POST` | `/api/v1/me/finance/bills` | Create Bill | — | `BillCreate` | 201 `BillResponse` |
+| `DELETE` | `/api/v1/me/finance/bills/{bill_id}` | Delete Bill | `bill_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/me/finance/bills/{bill_id}` | Update Bill | `bill_id` (path, integer, required) | `BillUpdate` | 200 `BillResponse` |
+| `GET` | `/api/v1/me/finance/budgets` | List Budgets | `month` (query, string, required) | — | 200 `BudgetListResponse` |
+| `PUT` | `/api/v1/me/finance/budgets` | Set Budget | `month` (query, string, required) | `BudgetSet` | 200 `BudgetResponse` |
+| `DELETE` | `/api/v1/me/finance/budgets/{budget_id}` | Delete Budget | `budget_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/finance/expenses` | List Expenses | `page` (query, integer, optional), `limit` (query, integer, optional), `category` (query, string, optional), `from` (query, string, optional), `to` (query, string, optional) | — | 200 `ExpenseListResponse` |
+| `POST` | `/api/v1/me/finance/expenses` | Create Expense | — | `ExpenseCreate` | 201 `ExpenseResponse` |
+| `DELETE` | `/api/v1/me/finance/expenses/{expense_id}` | Delete Expense | `expense_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/me/finance/expenses/{expense_id}` | Update Expense | `expense_id` (path, integer, required) | `ExpenseUpdate` | 200 `ExpenseResponse` |
+| `GET` | `/api/v1/me/finance/incomes` | List Incomes | `page` (query, integer, optional), `limit` (query, integer, optional), `from` (query, string, optional), `to` (query, string, optional) | — | 200 `IncomeListResponse` |
+| `POST` | `/api/v1/me/finance/incomes` | Create Income | — | `IncomeCreate` | 201 `IncomeResponse` |
+| `DELETE` | `/api/v1/me/finance/incomes/{income_id}` | Delete Income | `income_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/me/finance/incomes/{income_id}` | Update Income | `income_id` (path, integer, required) | `IncomeUpdate` | 200 `IncomeResponse` |
+| `GET` | `/api/v1/me/finance/summary` | Finance Summary | `month` (query, string, required) | — | 200 `FinanceSummaryResponse` |
 
-| Status | JSON | When |
-|--------|------|------|
-| 400 | `{"detail": "due_date cannot be in the past"}` | `due_date` before now |
-| 401 | `{"detail": "Authentication required"}` | No credentials |
-| 504 | `{"detail": "AI provider request timed out"}` | AI generation timed out |
-| 502 | `{"detail": "Failed to communicate with AI provider"}` / `{"detail": "AI provider returned an error"}` / etc. | AI provider failure |
+### `logbook`
 
-### 3.3 POST `/api/v1/objectives/{objective_id}/roadmap/renew`
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/me/logs` | List Entries | `page` (query, integer, optional), `limit` (query, integer, optional), `kind` (query, string, optional), `from` (query, string, optional), `to` (query, string, optional) | — | 200 `LogEntryListResponse` |
+| `POST` | `/api/v1/me/logs` | Create Entry | — | `LogEntryCreate` | 201 `LogEntryResponse` |
+| `GET` | `/api/v1/me/logs/report` | Log Report | `from` (query, string, optional), `to` (query, string, optional) | — | 200 `LogReportResponse` |
+| `DELETE` | `/api/v1/me/logs/{entry_id}` | Delete Entry | `entry_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/logs/{entry_id}` | Get Entry | `entry_id` (path, integer, required) | — | 200 `LogEntryResponse` |
+| `PATCH` | `/api/v1/me/logs/{entry_id}` | Update Entry | `entry_id` (path, integer, required) | `LogEntryUpdate` | 200 `LogEntryResponse` |
 
-Generates the **next** 7-day roadmap window. Only callable once 7 days have
-elapsed since the last generation (context carried from the previous window).
+### `medication`
 
-**Path params:** `objective_id` (int, ≥1).
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/me/medication-intakes` | List Intakes | `page` (query, integer, optional), `limit` (query, integer, optional), `medication_id` (query, integer, optional), `status` (query, string, optional), `from` (query, string, optional), `to` (query, string, optional) | — | 200 `IntakeListResponse` |
+| `DELETE` | `/api/v1/me/medication-intakes/{intake_id}` | Delete Intake | `intake_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/medications` | List Medications | `page` (query, integer, optional), `limit` (query, integer, optional), `active` (query, boolean, optional) | — | 200 `MedicationListResponse` |
+| `POST` | `/api/v1/me/medications` | Create Medication | — | `MedicationCreate` | 201 `MedicationResponse` |
+| `GET` | `/api/v1/me/medications/adherence` | Medication Adherence | `days` (query, integer, optional) | — | 200 `AdherenceResponse` |
+| `DELETE` | `/api/v1/me/medications/{medication_id}` | Delete Medication | `medication_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/medications/{medication_id}` | Get Medication | `medication_id` (path, integer, required) | — | 200 `MedicationResponse` |
+| `PATCH` | `/api/v1/me/medications/{medication_id}` | Update Medication | `medication_id` (path, integer, required) | `MedicationUpdate` | 200 `MedicationResponse` |
+| `POST` | `/api/v1/me/medications/{medication_id}/intakes` | Log Intake | `medication_id` (path, integer, required) | `IntakeCreate` | 201 `IntakeResponse` |
 
-**Required headers:** auth (owner **or** `ADMIN`).
+### `objectives`
 
-**Request body:** none.
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/objectives/` | List Objectives | `offset` (query, integer, optional), `limit` (query, integer, optional) | — | 200 `array[ObjectiveResponse]` |
+| `POST` | `/api/v1/objectives/assistant` | Objective Assistant | — | `ObjectiveAssistantRequest` | 200 `ObjectiveAssistantResponse` |
+| `POST` | `/api/v1/objectives/register` | Register Objective | — | `RegisterObjectiveRequest` | 200 `ObjectiveResponse` |
+| `GET` | `/api/v1/objectives/{objective_id}/roadmap/days` | List Roadmap Days | `objective_id` (path, integer, required) | — | 200 `RoadmapDayListResponse` |
+| `DELETE` | `/api/v1/objectives/{objective_id}/roadmap/days/{day_id}` | Delete Roadmap Day | `objective_id` (path, integer, required), `day_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/objectives/{objective_id}/roadmap/days/{day_id}` | Update Roadmap Day Status | `objective_id` (path, integer, required), `day_id` (path, integer, required) | `RoadmapDayStatusUpdate` | 200 `RoadmapDayResponse` |
+| `POST` | `/api/v1/objectives/{objective_id}/roadmap/renew` | Renew Objective Roadmap | `objective_id` (path, integer, required) | — | 200 `ObjectiveResponse` |
 
-**Success — `200`** — `ObjectiveResponse` with a new `roadmap` and fresh `days`.
+### `other`
 
-**Errors**
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/health` | Health | — | — | 200 `JSON` |
 
-| Status | JSON | When |
-|--------|------|------|
-| 404 | `{"detail": "Objective not found"}` | Objective doesn't exist |
-| 403 | `{"detail": "Not authorized"}` | Not the owner and not `ADMIN` |
-| 409 | `{"detail": "Roadmap can only be renewed every 7 days. Available after <iso>"}` | Window not elapsed yet |
-| 400 | `{"detail": "Objective already expired"}` | `due_date` passed |
-| 502 / 504 | AI provider failure | See 3.2 |
+### `privacy`
+
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `DELETE` | `/api/v1/me` | Delete My Account | — | `AccountDeletionRequest` | 200 `AccountDeletionResponse` |
+| `GET` | `/api/v1/me/consents` | List Consents | — | — | 200 `ConsentListResponse` |
+| `PUT` | `/api/v1/me/consents` | Update Consent | — | `ConsentUpdateRequest` | 200 `ConsentRecordSchema` |
+| `DELETE` | `/api/v1/me/consents/{consent_type}` | Withdraw Consent | `consent_type` (path, string, required) | — | 200 `ConsentWithdrawalResponse` |
+| `GET` | `/api/v1/me/export` | Export My Data | — | — | 200 `DataExportResponse` |
+
+### `productivity`
+
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/me/agenda` | Get Agenda | `from` (query, string, optional), `to` (query, string, optional) | — | 200 `AgendaResponse` |
+| `GET` | `/api/v1/me/checklists` | List Checklists | `page` (query, integer, optional), `limit` (query, integer, optional), `category` (query, string, optional) | — | 200 `ChecklistListResponse` |
+| `POST` | `/api/v1/me/checklists` | Create Checklist | — | `ChecklistCreate` | 201 `ChecklistResponse` |
+| `DELETE` | `/api/v1/me/checklists/{checklist_id}` | Delete Checklist | `checklist_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/checklists/{checklist_id}` | Get Checklist | `checklist_id` (path, integer, required) | — | 200 `ChecklistResponse` |
+| `PATCH` | `/api/v1/me/checklists/{checklist_id}` | Update Checklist | `checklist_id` (path, integer, required) | `ChecklistUpdate` | 200 `ChecklistResponse` |
+| `POST` | `/api/v1/me/checklists/{checklist_id}/items` | Add Checklist Item | `checklist_id` (path, integer, required) | `ChecklistItemCreate` | 201 `ChecklistItemResponse` |
+| `DELETE` | `/api/v1/me/checklists/{checklist_id}/items/{item_id}` | Delete Checklist Item | `checklist_id` (path, integer, required), `item_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/me/checklists/{checklist_id}/items/{item_id}` | Update Checklist Item | `checklist_id` (path, integer, required), `item_id` (path, integer, required) | `ChecklistItemUpdate` | 200 `ChecklistItemResponse` |
+| `GET` | `/api/v1/me/focus-sessions` | List Focus Sessions | `page` (query, integer, optional), `limit` (query, integer, optional), `from` (query, string, optional), `to` (query, string, optional) | — | 200 `FocusSessionListResponse` |
+| `POST` | `/api/v1/me/focus-sessions` | Create Focus Session | — | `FocusSessionCreate` | 201 `FocusSessionResponse` |
+| `DELETE` | `/api/v1/me/focus-sessions/{session_id}` | Delete Focus Session | `session_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/me/focus-sessions/{session_id}` | Update Focus Session | `session_id` (path, integer, required) | `FocusSessionUpdate` | 200 `FocusSessionResponse` |
+| `GET` | `/api/v1/me/habits` | List Habits | `page` (query, integer, optional), `limit` (query, integer, optional) | — | 200 `HabitListResponse` |
+| `POST` | `/api/v1/me/habits` | Create Habit | — | `HabitCreate` | 201 `HabitResponse` |
+| `DELETE` | `/api/v1/me/habits/{habit_id}` | Delete Habit | `habit_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/habits/{habit_id}` | Get Habit | `habit_id` (path, integer, required) | — | 200 `HabitResponse` |
+| `POST` | `/api/v1/me/habits/{habit_id}/check-ins` | Check In Habit | `habit_id` (path, integer, required) | JSON | 200 `HabitResponse` |
+| `GET` | `/api/v1/me/notes` | List Notes | `page` (query, integer, optional), `limit` (query, integer, optional), `tag` (query, string, optional), `pinned` (query, boolean, optional) | — | 200 `NoteListResponse` |
+| `POST` | `/api/v1/me/notes` | Create Note | — | `NoteCreate` | 201 `NoteResponse` |
+| `DELETE` | `/api/v1/me/notes/{note_id}` | Delete Note | `note_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/notes/{note_id}` | Get Note | `note_id` (path, integer, required) | — | 200 `NoteResponse` |
+| `PATCH` | `/api/v1/me/notes/{note_id}` | Update Note | `note_id` (path, integer, required) | `NoteUpdate` | 200 `NoteResponse` |
+| `GET` | `/api/v1/me/reminders` | List Reminders | `page` (query, integer, optional), `limit` (query, integer, optional), `status` (query, string, optional), `from` (query, string, optional), `to` (query, string, optional) | — | 200 `ReminderListResponse` |
+| `POST` | `/api/v1/me/reminders` | Create Reminder | — | `ReminderCreate` | 201 `ReminderResponse` |
+| `DELETE` | `/api/v1/me/reminders/{reminder_id}` | Delete Reminder | `reminder_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/me/reminders/{reminder_id}` | Update Reminder | `reminder_id` (path, integer, required) | `ReminderUpdate` | 200 `ReminderResponse` |
+| `POST` | `/api/v1/me/reminders/{reminder_id}/snooze` | Snooze Reminder | `reminder_id` (path, integer, required) | `ReminderSnooze` | 200 `ReminderResponse` |
+| `GET` | `/api/v1/me/tasks` | List Tasks | `page` (query, integer, optional), `limit` (query, integer, optional), `status` (query, string, optional), `priority` (query, string, optional), `due_from` (query, string, optional), `due_to` (query, string, optional) | — | 200 `TaskListResponse` |
+| `POST` | `/api/v1/me/tasks` | Create Task | — | `TaskCreate` | 201 `TaskResponse` |
+| `DELETE` | `/api/v1/me/tasks/{task_id}` | Delete Task | `task_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/tasks/{task_id}` | Get Task | `task_id` (path, integer, required) | — | 200 `TaskResponse` |
+| `PATCH` | `/api/v1/me/tasks/{task_id}` | Update Task | `task_id` (path, integer, required) | `TaskUpdate` | 200 `TaskResponse` |
+| `GET` | `/api/v1/me/today` | Get Today | — | — | 200 `TodayResponse` |
+| `POST` | `/api/v1/me/weekly-plan` | Generate Weekly Plan | — | `WeeklyPlanRequest` | 200 `WeeklyPlanResponse` |
+| `POST` | `/api/v1/me/weekly-plan/accept` | Accept Weekly Plan | — | — | 200 `WeeklyPlanAcceptResponse` |
+
+### `promotions`
+
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `POST` | `/api/v1/me/promo-codes/redeem` | Redeem Promo Code | — | `PromoRedeemRequest` | 201 `PromoRedeemResponse` |
+| `GET` | `/api/v1/promotions/active` | List Active Promotions | — | — | 200 `array[PromotionResponse]` |
+
+### `proxy`
+
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `DELETE` | `/api/v1/proxy/{service_name}` | Proxy Request | `service_name` (path, string, required) | — | 200 `JSON` |
+| `GET` | `/api/v1/proxy/{service_name}` | Proxy Request | `service_name` (path, string, required) | — | 200 `JSON` |
+| `PATCH` | `/api/v1/proxy/{service_name}` | Proxy Request | `service_name` (path, string, required) | — | 200 `JSON` |
+| `POST` | `/api/v1/proxy/{service_name}` | Proxy Request | `service_name` (path, string, required) | — | 200 `JSON` |
+| `PUT` | `/api/v1/proxy/{service_name}` | Proxy Request | `service_name` (path, string, required) | — | 200 `JSON` |
+
+### `public`
+
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/account-deletion` | Account Deletion Page | `error` (query, string, optional), `message` (query, string, optional) | — | 200 `JSON` |
+| `POST` | `/account-deletion/request` | Account Deletion Request | — | — | 200 `JSON` |
+| `GET` | `/privacy` | Privacy Page | — | — | 200 `JSON` |
+| `GET` | `/terms` | Terms Page | — | — | 200 `JSON` |
+
+### `study`
+
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `DELETE` | `/api/v1/me/study/cards/{card_id}` | Delete Card | `card_id` (path, integer, required) | — | 204 `(no content)` |
+| `PATCH` | `/api/v1/me/study/cards/{card_id}` | Update Card | `card_id` (path, integer, required) | `CardUpdate` | 200 `CardResponse` |
+| `POST` | `/api/v1/me/study/cards/{card_id}/reviews` | Review Card | `card_id` (path, integer, required) | `ReviewCreate` | 200 `CardResponse` |
+| `GET` | `/api/v1/me/study/decks` | List Decks | `page` (query, integer, optional), `limit` (query, integer, optional) | — | 200 `DeckListResponse` |
+| `POST` | `/api/v1/me/study/decks` | Create Deck | — | `DeckCreate` | 201 `DeckResponse` |
+| `DELETE` | `/api/v1/me/study/decks/{deck_id}` | Delete Deck | `deck_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/study/decks/{deck_id}` | Get Deck | `deck_id` (path, integer, required) | — | 200 `DeckResponse` |
+| `PATCH` | `/api/v1/me/study/decks/{deck_id}` | Update Deck | `deck_id` (path, integer, required) | `DeckUpdate` | 200 `DeckResponse` |
+| `GET` | `/api/v1/me/study/decks/{deck_id}/cards` | List Cards | `deck_id` (path, integer, required), `page` (query, integer, optional), `limit` (query, integer, optional), `due_only` (query, boolean, optional) | — | 200 `CardListResponse` |
+| `POST` | `/api/v1/me/study/decks/{deck_id}/cards` | Add Card | `deck_id` (path, integer, required) | `CardCreate` | 201 `CardResponse` |
+| `POST` | `/api/v1/me/study/mind-map` | Generate Mind Map | — | `MindMapRequest` | 200 `MindMapResponse` |
+| `GET` | `/api/v1/me/study/plans` | List Plans | `page` (query, integer, optional), `limit` (query, integer, optional), `status` (query, string, optional) | — | 200 `StudyPlanListResponse` |
+| `POST` | `/api/v1/me/study/plans` | Create Plan | — | `StudyPlanCreate` | 201 `StudyPlanResponse` |
+| `DELETE` | `/api/v1/me/study/plans/{plan_id}` | Delete Plan | `plan_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/me/study/plans/{plan_id}` | Get Plan | `plan_id` (path, integer, required) | — | 200 `StudyPlanResponse` |
+| `PATCH` | `/api/v1/me/study/plans/{plan_id}` | Update Plan | `plan_id` (path, integer, required) | `StudyPlanUpdate` | 200 `StudyPlanResponse` |
+| `POST` | `/api/v1/me/study/quiz` | Generate Quiz | — | `QuizRequest` | 200 `QuizResponse` |
+
+### `system-prompts`
+
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/system-prompts/` | List System Prompts | `page` (query, integer, optional), `limit` (query, integer, optional) | — | 200 `JSON` |
+| `POST` | `/api/v1/system-prompts/` | Create System Prompt | — | `SystemPromptRequest` | 201 `SystemPromptResponse` |
+| `DELETE` | `/api/v1/system-prompts/{prompt_id}` | Delete System Prompt | `prompt_id` (path, integer, required) | — | 204 `(no content)` |
+| `GET` | `/api/v1/system-prompts/{prompt_id}` | Get System Prompt | `prompt_id` (path, integer, required) | — | 200 `JSON` |
+| `PUT` | `/api/v1/system-prompts/{prompt_id}` | Update System Prompt | `prompt_id` (path, integer, required) | `SystemPromptRequest` | 200 `SystemPromptResponse` |
+
+### `users`
+
+| Method | Path | Summary | Params | Body | Success |
+|--------|------|---------|--------|------|---------|
+| `GET` | `/api/v1/users/` | List Users | `page` (query, integer, optional), `limit` (query, integer, optional) | — | 200 `UserListResponse` |
+| `PATCH` | `/api/v1/users/me` | Update My Profile | — | `UserProfileUpdate` | 200 `UserProfileResponse` |
+| `PATCH` | `/api/v1/users/me/password` | Change My Password | — | `PasswordChangeRequest` | 200 `ActionResponse` |
+| `DELETE` | `/api/v1/users/{user_id}` | Delete User | `user_id` (path, integer, required) | — | 200 `ActionResponse` |
+| `PATCH` | `/api/v1/users/{user_id}/demote` | Demote User | `user_id` (path, integer, required) | — | 200 `ActionResponse` |
+| `PATCH` | `/api/v1/users/{user_id}/promote` | Promote User | `user_id` (path, integer, required) | — | 200 `ActionResponse` |
+<!-- END:endpoint-catalog -->
 
 ---
 
-## 4. Roadmap Days
+## 4. AI request budget (per-plan daily quota)
 
-Base: `/api/v1/objectives` · All JSON · Owner or `ADMIN` only.
+AI endpoints charge the caller's daily budget keyed by `plan_tier` (`free`, `trial`, `starter`, `pro`, `premium`).  The limits live in `app/clients/plan_limits.py`.  When the budget is spent the response is `429 {"detail": "<pt-BR>", "code": "ai_quota_exceeded"}`.  A `plan_upgrade_required` (402) means the endpoint itself is not available on the caller's plan.
 
-### 4.1 GET `/api/v1/objectives/{objective_id}/roadmap/days`
-
-Lists all roadmap days of an objective.
-
-**Path params:** `objective_id` (int, ≥1). **Auth:** owner or `ADMIN`.
-
-**Success — `200`**
-
-```json
-{
-  "objective_id": 5,
-  "days": [
-    { "id": 12, "objective_id": 5, "day_number": 1,
-      "day_date": "2026-09-18T00:00:00Z", "content": "Basic vocabulary", "status": "PENDING", "completed_at": null }
-  ]
-}
-```
-
-| Field | Type |
-|-------|------|
-| `objective_id` | int |
-| `days` | array of `RoadmapDayResponse` |
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 404 | `{"detail": "Objective not found"}` | Objective missing |
-| 403 | `{"detail": "Not authorized"}` | Not owner / not `ADMIN` |
-| 401 | `{"detail": "Authentication required"}` | No credentials |
-
-### 4.2 PATCH `/api/v1/objectives/{objective_id}/roadmap/days/{day_id}`
-
-Updates a roadmap day's status (e.g. mark a day as fulfilled / skipped / pending).
-
-**Path params:** `objective_id` (int, ≥1), `day_id` (int, ≥1).
-
-**Auth:** owner or `ADMIN`.
-
-**Request body**
-
-| Field | Type   | Required | Values |
-|-------|--------|----------|--------|
-| `status` | string | * | `"PENDING"` \| `"COMPLETED"` \| `"SKIPPED"` |
-
-**Success — `200`** — single `RoadmapDayResponse`:
-
-```json
-{ "id": 12, "objective_id": 5, "day_number": 1,
-  "day_date": "2026-09-18T00:00:00Z", "content": "Basic vocabulary", "status": "COMPLETED", "completed_at": "2026-09-18T12:05:00Z" }
-```
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 404 | `{"detail": "Objective not found"}` / `{"detail": "Roadmap day not found"}` | Objective or day missing |
-| 403 | `{"detail": "Not authorized"}` | Not owner / not `ADMIN` |
-| 422 | `{"detail": "Invalid request"}` | Invalid status value |
-
----
-
-## 5. Objective Assistant (guided goal creation)
-
-Base: `/api/v1/objectives/assistant` · JSON · Auth required.
-
-### 5.1 POST `/api/v1/objectives/assistant`
-
-Multi-turn conversational assistant that collects goal details and eventually
-persists the objective. Conversation history is kept server-side per user in a
-cache; it is cleared automatically once the objective is created.
-
-**Required headers:** auth. Subject to the **AI (strict)** rate limit
-(10 req/min).
-
-**Request body**
-
-| Field | Type   | Required | Constraints |
-|-------|--------|----------|-------------|
-| `user_message` | string | * | 1–5000 chars |
-
-**Success — `200`**
-
-```json
-{ "assistant_message": "Ok, para que data você precisa concluir?" }
-```
-
-| Field | Type |
-|-------|------|
-| `assistant_message` | string |
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 400 | `{"detail": "due_date cannot be in the past"}` | AI proposed a past due date |
-| 422 | `{"detail": "Invalid request"}` or `{"detail": "user_message must be a non-empty string"}` | Validation |
-| 502 / 504 | AI provider failure | See section 3.2 |
-
----
-
-## 6. Chat / Agents
-
-### 6.1 POST `/api/v1/ai/chat` — generic chat completion
-
-Single-turn chat completion against a configured "agent" (a row in the
-`SystemPrompt` table referenced by `agent_id`). Responses are cached for
-5 minutes (`cache_ttl_ai`).
-
-**Required headers:** auth. **AI rate limit** (10 req/min).
-
-**Request body**
-
-| Field | Type   | Required | Constraints |
-|-------|--------|----------|-------------|
-| `agent_id` | int | * | >0; must exist in `SystemPrompt` |
-| `user_message` | string | * | 1–5000 chars |
-
-**Success — `200`**
-
-```json
-{ "assistant_message": "Resposta do assistente..." }
-```
-
-| Field | Type |
-|-------|------|
-| `assistant_message` | string |
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 404 | `{"detail": "Agent not found"}` | `agent_id` doesn't match a system prompt |
-| 422 | `{"detail": "Invalid request"}` | Schema validation |
-| 502 / 504 | AI provider failure | See section 3.2 |
-
-### 6.2 POST `/api/v1/agents/general/chat` — general agent
-
-Conversational assistant with memory (cached per user) that consults the
-user's objectives + roadmap day statuses and reports progress.
-
-**Required headers:** auth. **AI rate limit** (10 req/min).
-
-**Request body**
-
-| Field | Type   | Required | Constraints |
-|-------|--------|----------|-------------|
-| `user_message` | string | * | 1–5000 chars |
-
-**Success — `200`**
-
-```json
-{ "assistant_message": "Você completou 3 de 7 dias esta semana." }
-```
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 422 | `{"detail": "Invalid request"}` or `{"detail": "user_message must be a non-empty string"}` | Validation |
-| 502 / 504 | AI provider failure | See section 3.2 |
-
-### 6.3 DELETE `/api/v1/agents/general/conversation`
-
-Clears the authenticated user's general-agent conversation history (fresh
-chat on next message).
-
-**Required headers:** auth.
-
-**Success — `200`**
-
-```json
-{ "message": "Conversa do assistente geral apagada com sucesso." }
-```
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 401 | `{"detail": "Authentication required"}` | No credentials |
-
----
-
-## 7. Proxy (infrastructure passthrough)
-
-Base: `/api/v1/proxy` · Forwards to configured downstream microservices.
-
-### 7.1 GET/POST/PUT/PATCH/DELETE `/api/v1/proxy/{service_name:path}`
-
-Any HTTP method; forwards the request (same body/query/method) to the
-downstream service named by the first path segment. Downstream headers are
-echoed back; `Authorization`/`Cookie`/`X-API-Key` are stripped and
-`X-Forwarded-For` + `X-Gateway-User` are injected. GET/HEAD responses are
-cached **per caller** (`cache_ttl_default` = 60 s; hits flagged via
-`X-Cache: HIT`), so a cached response never leaks between users.
-
-> Typical mobile usage: none — the app talks to the first-class endpoints
-> above. This exists for gateway-to-microservice calls (e.g. an `ai` service
-> behind `/proxy/ai/...`).
-
-**Required headers:** auth. **AI rate limit** if path contains `/ai/`.
-
-**Path params:** `service_name` (first segment names the service, rest is the
-downstream path).
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 404 | `{"detail": "Service not found"}` | First segment not a configured service |
-| 413 | `{"detail": "Payload too large"}` | Body > 1 MiB (`max_payload_bytes`) |
-| 502 | `{"detail": "Bad gateway response"}` | Downstream unreachable/error |
-| 401 | `{"detail": "Authentication required"}` | No credentials |
-
----
-
-## 8. Cache management
-
-Per-user cache controls. Admin/external tooling can clear a user's cached
-data (AI conversation histories and their reverse-proxy response-cache
-entries) to force a fresh state without a full Redis flush.
-
-### 8.1 POST `/api/v1/cache/flush`
-
-Clears **only the authenticated user's** cached keys:
-
-- conversation histories: `conversation:<agent>:<user_id>` for every
-  assistant (general agent, objective assistant),
-- reverse-proxy response-cache entries tracked under
-  `proxy_cache:index:<user_id>` (their keys hash the caller's identity and
-  cannot be matched by pattern).
-
-Other users' data and global state are never touched (rate-limit counters,
-the token denylist and the shared `ai_response` prompt-digest cache persist).
-API-key (`SERVICE`) identities get `403` — their cache is keyed by key-hash,
-not a user id, so there is nothing user-scoped to flush.
-
-**Required headers:** auth (JWT only).
-
-**Success — `200`**
-
-```json
-{
-  "status": "ok",
-  "user_id": 3,
-  "cleared": { "conversations_cleared": 2, "proxy_entries_cleared": 5 }
-}
-```
-
-**Errors**
-
-| Status | JSON | When |
-|--------|------|------|
-| 401 | `{"detail": "Authentication required"}` | No credentials |
-| 403 | `{"detail": "API-key authentication cannot be used on this endpoint"}` | `X-API-Key` identity |
-
----
-
-## 9. Admin
-
-Two surfaces:
-
-1. **JSON admin API** (`/api/v1/users`, `/api/v1/system-prompts`) — for
-   programmatic administration; requires an `ADMIN`-role user.
-2. **Server-rendered panel** (`/admin/...`) — HTML forms + **httpOnly
-   cookie** session (cookie: `novaiax_admin_session`); no `Authorization`
-   header. Non-admins are redirected to `/admin/login`.
-
-### 8.1 JSON admin API — Users
-
-All require an `ADMIN`-role token (403 `{"detail": "Not authorized"}` for
-non-admins).
-
-#### GET `/api/v1/users/` — list users
-
-**Query params:** `page` (int, ≥1, default 1), `limit` (int, 1–100, default 20).
-
-**Success — `200`**
-
-```json
-{
-  "users": [
-    { "id": 1, "full_name": "Ana", "email": "ana@x.com", "role": "USER", "created_at": "2026-09-18T10:00:00Z" }
-  ],
-  "page": 1,
-  "limit": 20,
-  "total": 1
-}
-```
-
-#### PATCH `/api/v1/users/{user_id}/promote` — make a user `ADMIN`
-
-**Success — `200`**: `{"message": "User promoted to administrator."}`
-(errors: 404 `{"detail": "User not found"}`).
-
-#### PATCH `/api/v1/users/{user_id}/demote` — downgrade an admin
-
-**Success — `200`**: `{"message": "User demoted to regular user."}`
-(errors: 404 user not found; **400** `{"detail": "Cannot demote the last administrator."}`).
-
-#### DELETE `/api/v1/users/{user_id}` — delete a user
-
-**Success — `200`**: `{"message": "User deleted."}`
-(errors: 404 user not found; **400** `{"detail": "Cannot delete the last administrator."}`).
-
-### 8.2 JSON admin API — System Prompts
-
-These are the "agents" referenced by `agent_id` in `POST /api/v1/ai/chat`.
-All require an `ADMIN`-role token.
-
-#### GET `/api/v1/system-prompts/` — list prompts
-
-**Query params:** `page` (int ≥1, default 1), `limit` (int 1–100, default 50).
-
-**Success — `200`**
-
-```json
-{
-  "prompts": [
-    { "id": 3, "tipo": "general", "system_prompt": "You are a helpful assistant.", "created_at": "2026-09-18T10:00:00Z" }
-  ],
-  "page": 1, "limit": 50, "total": 1
-}
-```
-
-#### POST `/api/v1/system-prompts/` — create (201)
-
-Body: `tipo` string 2–100 (required) · `system_prompt` string 1–5000 (required).
-
-**Success — `201`**: single prompt object (see above).
-
-#### GET `/api/v1/system-prompts/{prompt_id}` — fetch one
-
-**Success — `200`**: prompt object. **404**: `{"detail": "System prompt not found"}`.
-
-#### PUT `/api/v1/system-prompts/{prompt_id}` — update
-
-Body: same as create. **Success — `200`**: prompt object.
-**404**: `{"detail": "System prompt not found"}`.
-
-#### DELETE `/api/v1/system-prompts/{prompt_id}` — delete
-
-**Success — `204` No Content.** **404**: `{"detail": "System prompt not found"}`.
-
-### 8.3 Server-rendered admin panel (`/admin`)
-
-Authenticated via the `novaiax_admin_session` httpOnly cookie (access JWT).
-The web UI is browser-driven HTML; the mobile app does **not** use these.
-
-| Method | Path | Purpose | Auth |
-|--------|------|---------|------|
-| GET  | `/admin/login` | Login form | public |
-| POST | `/admin/login` | Authenticate (ADMIN only); sets cookie; `303 → /admin/` | public |
-| POST | `/admin/logout` | Clears cookie; `303 → /admin/login` | cookie |
-| GET  | `/admin/` | Dashboard (counts of users/admins/prompts) | cookie; redirect `303 → /admin/login` if invalid |
-| GET  | `/admin/users` | User table (paginated) | cookie |
-| POST | `/admin/users/{id}/promote` / `/demote` / `/delete` | Role ops / delete | cookie |
-| GET  | `/admin/system-prompts` | Prompt list + create form | cookie |
-| POST | `/admin/system-prompts` | Create prompt | cookie |
-| GET  | `/admin/system-prompts/{id}/edit` | Edit form | cookie |
-| POST | `/admin/system-prompts/{id}` | Update prompt | cookie |
-| POST | `/admin/system-prompts/{id}/delete` | Delete prompt | cookie |
-| GET  | `/admin/static/admin.css` | Stylesheet | public |
-
-All actions reuse the same service layer as the JSON API (no duplicated
-business logic). Login failures render the form with an error; a non-admin
-submitting the login form receives `403` with "Only administrators can access
-the panel.".
-
-**CSRF:** `GET /admin/login` mints a `novaiax_csrf` cookie (path `/admin`,
-httpOnly, `SameSite=Lax`). Every panel POST form carries a hidden `csrf_token`
-that must match that cookie — a mismatch returns `403`
-`{"detail": "CSRF token mismatch"}`. Clients that never received the cookie
-(plain scripting or `curl`) are accepted without a token.
-
----
-
-## 9. NOT documented (internal / debug / non-app)
-
-These endpoints exist but are not called by the mobile app, so they are
-excluded from reference detail above:
-
-- **GET `/health`** — liveness/readiness probe (DB + Redis checks). Public and
-  rate-limit-exempt. `200` `{"status":"ok","db":"ok","redis":"ok"}` or `503`
-  `{"status":"degraded","db":"error","redis":"error"}`. Used by the host
-  orchestrator (Render), not the app.
-- **`/docs`** and **`/openapi.json`** — Swagger UI and OpenAPI schema,
-  exposed for development.
-- **`/admin/static/*`** — static CSS assets (see 8.3).
-- The test suite references a `GET /rate-limit-probe` route, but that route is
-  registered **only inside tests** (as a stand-in protected path) and does not
-  exist in the deployed application.

@@ -37,6 +37,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.network import get_client_ip
 from app.models.user import UserRole
+from app.utils.coercion import coerce_int
 
 # Create a sub-router with the ``/proxy`` prefix and ``proxy`` tag.
 router = APIRouter(prefix="/proxy", tags=["proxy"])
@@ -129,7 +130,12 @@ def _cache_replay(cached: str) -> Response:
     headers = dict(entry.get("headers") or {})
     headers["X-Cache"] = "HIT"
     body = base64.b64decode(entry["body"]) if isinstance(entry.get("body"), str) else b""
-    return Response(content=body, status_code=int(entry["status_code"]), headers=headers, media_type=None)
+    status_code = coerce_int(entry.get("status_code"))
+    if status_code is None:
+        # A corrupted cache entry must not surface as a 500 from int(); treat
+        # it as a bad gateway and let the caller retry against the origin.
+        status_code = 502
+    return Response(content=body, status_code=status_code, headers=headers, media_type=None)
 
 
 @router.get("/{service_name:path}")
@@ -180,12 +186,12 @@ async def proxy_request(
     # The first path segment identifies the service (e.g. "ai").
     service = settings.downstream_services.get(service_name.split("/")[0])
     if not service:
-        raise HTTPException(status_code=404, detail="Service not found")
+        raise HTTPException(status_code=404, detail="Serviço não encontrado.")
 
     # --- 2. Read and validate the request body ---
     body = await request.body()
     if len(body) > settings.max_payload_bytes:
-        raise HTTPException(status_code=413, detail="Payload too large")
+        raise HTTPException(status_code=413, detail="Conteúdo da requisição muito grande.")
 
     # --- 3. Check the cache (GET/HEAD only) ---
     if request.method in {"GET", "HEAD"}:
@@ -239,7 +245,7 @@ async def proxy_request(
             # Log the failure with context for debugging, then return
             # a 502 Bad Gateway to the client.
             logger.exception("Proxy request failed", extra={"service": service_name, "url": downstream_url})
-            raise HTTPException(status_code=502, detail="Bad gateway response") from exc
+            raise HTTPException(status_code=502, detail="Resposta inválida do serviço.") from exc
 
     # --- 7. Build the response ---
     response_body = resp.content

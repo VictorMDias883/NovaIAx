@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 # ``TYPE_CHECKING`` guard prevents a circular import at runtime.
@@ -40,12 +40,15 @@ class Objective(Base):
         created_at: Timestamp of when the objective was created.
             Defaults to ``datetime.now(UTC)`` at the application level.
         user_id: Foreign key referencing ``users.id``.  Establishes
-            the many-to-one relationship to :class:`User`.
+            the many-to-one relationship to :class:`User`.  Indexed by
+            ``ix_objectives_user_id`` because every objective read filters
+            on it (objective list, general-agent context).
         user: The owning :class:`User` instance (loaded via the
             ``back_populates`` relationship).
     """
 
     __tablename__ = "objectives"
+    __table_args__ = (Index("ix_objectives_user_id", "user_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -54,7 +57,7 @@ class Objective(Base):
     roadmap_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
 
     # Many-to-one relationship: many objectives → one user.
     # ``back_populates="objectives"`` links this to the ``objectives``

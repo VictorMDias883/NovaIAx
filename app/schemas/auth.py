@@ -6,10 +6,15 @@ authentication flow that creates real user records in the database and
 returns JWT tokens.
 """
 
+from datetime import date
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.config import get_settings
+from app.schemas.password_rules import PasswordRulesMixin
 
-class RegisterUserRequest(BaseModel):
+
+class RegisterUserRequest(PasswordRulesMixin):
     """Request body for the ``POST /auth/register`` endpoint.
 
     Validates that the provided data meets minimum security requirements
@@ -20,7 +25,11 @@ class RegisterUserRequest(BaseModel):
         email: A valid email address (validated by ``EmailStr``).
         password: Must be 8–128 characters and contain at least one
             digit and one uppercase letter (enforced by
-            :meth:`validate_password`).
+            :class:`app.schemas.password_rules.PasswordRulesMixin`, shared
+            with the password-change endpoint).
+        birth_date: The user's date of birth.  Used by the age gate: anyone
+            under :attr:`app.core.config.Settings.minimum_account_age_years`
+            is refused with a 422 before the account is created.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -28,24 +37,19 @@ class RegisterUserRequest(BaseModel):
     full_name: str = Field(min_length=2, max_length=120)
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
+    birth_date: date
 
-    @field_validator("password")
+    @field_validator("birth_date")
     @classmethod
-    def validate_password(cls, value: str) -> str:
-        """Enforce password complexity rules.
-
-        The password must contain:
-            - At least one digit (0–9).
-            - At least one uppercase letter (A–Z).
-
-        This validator runs automatically when Pydantic parses the
-        request body, so invalid passwords are rejected before they
-        reach the service layer.
-        """
-        if not any(char.isdigit() for char in value):
-            raise ValueError("password must contain at least one digit")
-        if not any(char.isupper() for char in value):
-            raise ValueError("password must contain at least one uppercase letter")
+    def validate_minimum_age(cls, value: date) -> date:
+        """Reject dates that make the applicant younger than the age gate."""
+        minimum_age = get_settings().minimum_account_age_years
+        today = date.today()
+        age_on_today = today.year - value.year - ((today.month, today.day) < (value.month, value.day))
+        if age_on_today < minimum_age:
+            raise ValueError(
+                f"You must be at least {minimum_age} years old to create an account"
+            )
         return value
 
 
@@ -54,11 +58,17 @@ class LoginRequest(BaseModel):
 
     Attributes:
         email: The user's email address.
-        password: The user's plaintext password (min 1 character).
+        password: The user's plaintext password.
+
+            The upper bound matches :attr:`RegisterUserRequest.password`.  A
+            stored password can never exceed 128 characters, so a longer one
+            is rejected with a 422 before it reaches the expensive PBKDF2
+            hash — without this, a single request could hand the server a
+            multi-megabyte "password" and tie up a CPU core for seconds.
     """
 
     email: EmailStr
-    password: str = Field(min_length=1)
+    password: str = Field(min_length=1, max_length=128)
 
 
 class UserResponse(BaseModel):
@@ -88,7 +98,7 @@ class AuthResponse(BaseModel):
 class RefreshRequest(BaseModel):
     """Request body for the ``POST /auth/refresh`` endpoint."""
 
-    refresh_token: str = Field(min_length=1)
+    refresh_token: str = Field(min_length=1, max_length=4096)
 
 
 class TokenResponse(BaseModel):
@@ -107,5 +117,5 @@ class LogoutRequest(BaseModel):
             current session ends immediately.
     """
 
-    refresh_token: str = Field(min_length=1)
-    access_token: str | None = None
+    refresh_token: str = Field(min_length=1, max_length=4096)
+    access_token: str | None = Field(default=None, max_length=4096)

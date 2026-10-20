@@ -8,8 +8,6 @@ payload. Once the payload is valid, it registers the objective using the
 existing objective service.
 """
 
-import json
-import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -18,9 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.conversation_cache import ConversationCache
 from app.clients.ai_client import AIClient
+from app.clients.ai_router import AIRouter, run_ai_request
+from app.clients.ai_types import AIRequest, PlanTier
 from app.commands.objective_assistant_command import ObjectiveAssistantCommand
 from app.commands.register_objective_command import RegisterObjectiveCommand
 from app.core.logging import get_logger
+from app.utils.json_extraction import extract_json
 
 logger = get_logger(__name__)
 
@@ -34,10 +35,19 @@ class ObjectiveAssistantService:
     #: Logical agent name used to namespace the conversation cache.
     AGENT_KEY = "objective_assistant"
 
+    #: Replied instead of the model's raw JSON when the draft's due date is
+    #: not a ``YYYY-MM-DD`` date.  Registration is skipped so the user can
+    #: confirm the date on the next turn.
+    DUE_DATE_CONFIRMATION_MESSAGE = (
+        "Não consegui interpretar a data que você informou, então ainda não criei a sua meta. "
+        "Pode me confirmar a data de conclusão no formato YYYY-MM-DD (por exemplo, 2026-12-31)? "
+        "Assim que você confirmar, eu concluo o cadastro com o título e a descrição que já coletamos."
+    )
+
     def __init__(
         self,
         session: AsyncSession,
-        ai_client: AIClient,
+        ai_client: AIClient | AIRouter,
         objective_service: "ObjectiveService | None" = None,
         conversation_cache: ConversationCache | None = None,
     ) -> None:
@@ -51,7 +61,13 @@ class ObjectiveAssistantService:
         else:
             self.objective_service = objective_service
 
-    async def create_completion(self, command: ObjectiveAssistantCommand, user_id: int) -> dict[str, str]:
+    async def create_completion(
+        self,
+        command: ObjectiveAssistantCommand,
+        user_id: int,
+        *,
+        plan_tier: PlanTier = PlanTier.FREE,
+    ) -> dict[str, object]:
         """Handle one turn of the objective assistant workflow.
 
         The previous conversation is loaded from the cache and sent to the
@@ -59,6 +75,11 @@ class ObjectiveAssistantService:
         AI provides a complete objective payload that is actually
         registered, the whole cached conversation is deleted so the next
         conversation starts fresh.
+
+        Returns:
+            ``{"assistant_message": str, "created_objective": dict | None}``,
+            where ``created_objective`` holds the registered objective when
+            this turn auto-registered one.
         """
         system_prompt = (
             "Você é um assistente especializado em ajudar o usuário a criar uma meta/objetivo. "
@@ -71,93 +92,87 @@ class ObjectiveAssistantService:
         messages = await self.conversation_cache.get_messages(self.AGENT_KEY, user_id)
         to_send = [*messages, {"role": "user", "content": command.user_message}]
 
-        assistant_message = await self.ai_client.create_chat_completion_with_history(
-            system_prompt=system_prompt,
-            messages=to_send,
+        assistant = await run_ai_request(
+            self.ai_client,
+            AIRequest(
+                system_prompt=system_prompt,
+                user_message=command.user_message,
+                user_id=user_id,
+                history=to_send,
+                plan_tier=plan_tier,
+            ),
         )
-        messages = [*to_send, {"role": "assistant", "content": assistant_message}]
+        assistant_message = assistant.text
 
         # If the AI response contains valid JSON matching the objective schema,
         # we treat it as a completed objective draft and persist it.
         objective_created = False
-        parsed = self._extract_json(assistant_message)
+        created_objective: dict[str, object] | None = None
+        parsed = extract_json(assistant_message, context="Objective assistant")
         if parsed is not None and self._is_complete_payload(parsed):
             try:
                 # Support both Portuguese and English key names
                 if "titulo" in parsed:
                     title = str(parsed["titulo"]).strip()
                     description = str(parsed["descricao"]).strip()
-                    due_date = self._parse_due_date(parsed["prazo"])
+                    raw_due_date = parsed["prazo"]
                 else:
                     title = str(parsed["title"]).strip()
                     description = str(parsed["description"]).strip()
-                    due_date = self._parse_due_date(parsed["due_date"])
+                    raw_due_date = parsed["due_date"]
             except (KeyError, TypeError, ValueError):
                 title = description = ""
+                raw_due_date = None
             else:
                 if title and description:
-                    command_obj = RegisterObjectiveCommand(title=title, description=description, due_date=due_date)
-                    try:
-                        await self.objective_service.register(command_obj, user_id=user_id)
+                    due_date = self._parse_due_date(raw_due_date)
+                    if due_date is None:
+                        # The draft is complete but its deadline is unusable.
+                        # Do not register anything and do not echo the raw JSON
+                        # back as if the objective had been handled: ask the
+                        # user to confirm the date and keep the conversation so
+                        # the next turn can finish the job.
+                        logger.warning(
+                            "Objective assistant returned an unparsable due date; "
+                            "asking the user to confirm the date instead of registering",
+                            extra={
+                                "raw_due_date": str(raw_due_date)[:100],
+                                "user_id": user_id,
+                            },
+                        )
+                        assistant_message = self.DUE_DATE_CONFIRMATION_MESSAGE
+                    else:
+                        command_obj = RegisterObjectiveCommand(
+                            title=title, description=description, due_date=due_date
+                        )
+                        try:
+                            result = await self.objective_service.register(
+                                command_obj, user_id=user_id, plan_tier=plan_tier
+                            )
+                        except HTTPException:
+                            # Registration failed (e.g. past due date).  Keep the
+                            # conversation so the user can continue or retry.
+                            await self.conversation_cache.save(
+                                self.AGENT_KEY,
+                                user_id,
+                                [*to_send, {"role": "assistant", "content": assistant_message}],
+                            )
+                            raise
                         objective_created = True
-                    except HTTPException:
-                        # Registration failed (e.g. past due date).  Keep the
-                        # conversation so the user can continue or retry.
-                        await self.conversation_cache.save(self.AGENT_KEY, user_id, messages)
-                        raise
+                        created_objective = result
 
         if objective_created:
             # Once the objective is actually created, drop the whole cached
             # conversation so a new objective starts a fresh chat.
             await self.conversation_cache.clear(self.AGENT_KEY, user_id)
         else:
-            await self.conversation_cache.save(self.AGENT_KEY, user_id, messages)
-
-        return {"assistant_message": assistant_message}
-
-    def _extract_json(self, text: str) -> Any:
-        """Attempt to parse JSON from an AI response.
-
-        Tolerates markdown code fences (`` ```json ... ``` ``) and
-        surrounding natural-language text.  Tries, in order:
-        1. Parsing the whole message as-is.
-        2. Parsing the contents of a code fence.
-        3. Parsing the substring between the first ``{`` and last ``}``.
-
-        Returns the parsed value on success, or ``None`` if no valid
-        JSON could be extracted.
-        """
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-        fence_match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-        if fence_match:
-            try:
-                return json.loads(fence_match.group(1).strip())
-            except json.JSONDecodeError:
-                pass
-
-        start, end = text.find("{"), text.rfind("}")
-        if start != -1 and end > start:
-            try:
-                return json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                pass
-
-        # The assistant may legitimately reply in natural language while
-        # still collecting the objective data, so this is not fatal.  Only
-        # surface a warning when the reply *looks* like a broken JSON
-        # attempt (contains brace and objective keys) so the failure is not
-        # silent.
-        if "{" in text and ("titulo" in text or "title" in text or "prazo" in text or "due_date" in text):
-            logger.warning(
-                "Objective assistant reply looks like a malformed JSON objective payload",
-                extra={"assistant_reply": text[:500]},
+            await self.conversation_cache.save(
+                self.AGENT_KEY,
+                user_id,
+                [*to_send, {"role": "assistant", "content": assistant_message}],
             )
 
-        return None
+        return {"assistant_message": assistant_message, "created_objective": created_objective}
 
     def _is_complete_payload(self, payload: Any) -> bool:
         """Validate the AI payload structure before it is treated as a completion."""
@@ -171,13 +186,22 @@ class ObjectiveAssistantService:
         if not any(req.issubset(payload.keys()) for req in required_sets):
             return False
         # pick keys that exist and ensure they're non-empty strings
-        if "titulo" in payload:
-            keys = ("titulo", "descricao", "prazo")
-        else:
-            keys = ("title", "description", "due_date")
+        keys = ("titulo", "descricao", "prazo") if "titulo" in payload else ("title", "description", "due_date")
         return all(isinstance(payload[key], str) and bool(str(payload[key]).strip()) for key in keys)
 
-    def _parse_due_date(self, value: str) -> datetime:
-        """Parse the AI-supplied due date into a timezone-aware datetime."""
-        parsed = datetime.strptime(value, "%Y-%m-%d")
+    @staticmethod
+    def _parse_due_date(value: object) -> datetime | None:
+        """Parse the AI-supplied due date into a timezone-aware datetime.
+
+        Returns ``None`` — rather than raising — when the model hands back
+        something that is not a ``YYYY-MM-DD`` date (a prose deadline such as
+        "next month", a locale-formatted date, an int, ...), so the caller can
+        ask the user to confirm it instead of dropping the whole draft.
+        """
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.strptime(value.strip(), "%Y-%m-%d")
+        except ValueError:
+            return None
         return parsed.replace(tzinfo=UTC)

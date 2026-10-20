@@ -56,7 +56,9 @@ class RoadmapDay(Base):
     __tablename__ = "roadmap_days"
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    objective_id: Mapped[int] = mapped_column(ForeignKey("objectives.id"), nullable=False, index=True)
+    objective_id: Mapped[int] = mapped_column(
+        ForeignKey("objectives.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     day_number: Mapped[int] = mapped_column(Integer, nullable=False)
     day_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[RoadmapDayStatus] = mapped_column(

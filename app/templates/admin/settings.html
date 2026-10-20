@@ -1,0 +1,268 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Configurações{% endblock %}
+{% block content %}
+<h1>Configurações</h1>
+{{ ui.flashes(message, error) }}
+
+<nav class="tabs">
+  <a href="/admin/settings?tab=app" class="{{ 'active' if tab == 'app' else '' }}">Aplicativo</a>
+  <a href="/admin/settings?tab=limits" class="{{ 'active' if tab == 'limits' else '' }}">Limites de plano</a>
+  <a href="/admin/settings?tab=ai" class="{{ 'active' if tab == 'ai' else '' }}">Operações de IA</a>
+  <a href="/admin/settings?tab=contacts" class="{{ 'active' if tab == 'contacts' else '' }}">Contatos oficiais</a>
+</nav>
+
+{% if tab == 'app' %}
+{# ------------------------------------------------------------------ #}
+{# Remote app configuration.                                          #}
+{# ------------------------------------------------------------------ #}
+<form method="post" action="/admin/settings/app">
+  {{ ui.csrf_field(csrf_token) }}
+
+  <h2>Modo de manutenção</h2>
+  <div class="form-group">
+    <label>
+      <input type="checkbox" name="maintenance_mode" {{ 'checked' if app_config.maintenance_mode else '' }}>
+      Ativar modo de manutenção
+    </label>
+  </div>
+  <div class="form-group">
+    <label for="maintenance_message">Mensagem exibida</label>
+    <input type="text" id="maintenance_message" name="maintenance_message"
+           value="{{ app_config.maintenance_message }}" maxlength="500">
+  </div>
+
+  <h2>Versões do aplicativo</h2>
+  <div class="form-group">
+    <label for="min_supported_app_version">Versão mínima suportada</label>
+    <input type="text" id="min_supported_app_version" name="min_supported_app_version"
+           value="{{ app_config.min_supported_app_version }}" placeholder="1.0.0">
+  </div>
+  <div class="form-group">
+    <label for="recommended_app_version">Versão recomendada</label>
+    <input type="text" id="recommended_app_version" name="recommended_app_version"
+           value="{{ app_config.recommended_app_version }}" placeholder="1.0.0">
+  </div>
+  <div class="form-group">
+    <label for="store_url">Link da loja</label>
+    <input type="url" id="store_url" name="store_url"
+           value="{{ app_config.store_url }}" placeholder="https://play.google.com/...">
+  </div>
+
+  <h2>Módulos</h2>
+  <div class="form-group">
+    {% for module in modules %}
+    <label class="inline">
+      <input type="checkbox" name="feature_{{ module }}"
+             {{ 'checked' if app_config.feature_flags.get(module, true) else '' }}>
+      {{ module }}
+    </label>
+    {% endfor %}
+  </div>
+
+  <h2>Avisos</h2>
+  <div class="form-group">
+    <label for="announcements">Um aviso por linha: <code>Título | Corpo | nível</code></label>
+    <textarea id="announcements" name="announcements" rows="5" placeholder="Nova versão disponível | Atualize o app | info">{% for a in app_config.announcements %}{{ a.title }} | {{ a.body }} | {{ a.level }}
+{% endfor %}</textarea>
+  </div>
+
+  <button type="submit" class="btn">Salvar configuração</button>
+</form>
+
+{% elif tab == 'limits' %}
+{# ------------------------------------------------------------------ #}
+{# Plan ceiling overrides.                                            #}
+{# ------------------------------------------------------------------ #}
+<p class="muted">Preços e período de teste são definidos no Play Console e aparecem aqui apenas para leitura. Deixe um campo em branco para manter o padrão do código.</p>
+{% for plan in plans %}
+<h2>{{ plan.display_name }} <small>({{ plan.plan }})</small> — {{ plan.price_brl or 'sem preço' }}</h2>
+<form method="post" action="/admin/settings/limits/{{ plan.plan }}">
+  {{ ui.csrf_field(csrf_token) }}
+  <table>
+    <tbody>
+      {% for field in editable_fields %}
+      <tr>
+        <th>{{ field }}</th>
+        <td>
+          <input type="number" name="{{ field }}" step="1"
+                 value="{{ plan.override.get(field, '') }}"
+                 placeholder="{{ plan.defaults[field] }}">
+        </td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <th>models</th>
+        <td>
+          <input type="text" name="models"
+                 value="{{ (plan.override.get('models') or plan.defaults.models) | join(', ') }}">
+        </td>
+      </tr>
+      <tr>
+        <th>features</th>
+        <td>
+          <input type="text" name="features"
+                 value="{{ (plan.override.get('features') or plan.defaults.features) | join(', ') }}">
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="actions-cell">
+    <button type="submit" class="btn">Salvar</button>
+  </div>
+</form>
+<form method="post" action="/admin/settings/limits/{{ plan.plan }}/clear" class="inline"
+      data-confirm="Restaurar os limites padrão deste plano?">
+  {{ ui.csrf_field(csrf_token) }}
+  <button type="submit" class="btn btn-sm btn-danger">Restaurar padrão</button>
+</form>
+{% endfor %}
+
+{% elif tab == 'ai' %}
+{# ------------------------------------------------------------------ #}
+{# AI operations.                                                     #}
+{# ------------------------------------------------------------------ #}
+<p class="muted">As chaves de API nunca são exibidas nem armazenadas aqui — elas permanecem nas variáveis de ambiente. Total de fallbacks desde o início: <strong>{{ total_fallbacks }}</strong>.</p>
+
+<h2>Provedores</h2>
+{% if providers %}
+<table>
+  <thead>
+    <tr><th>Provedor</th><th>Configurado</th><th>Breaker</th><th>Sucessos</th><th>Falhas</th><th>Fallbacks</th><th>Latência p50/p95</th><th>Ações</th></tr>
+  </thead>
+  <tbody>
+    {% for provider in providers %}
+    <tr>
+      <td><strong>{{ provider.name }}</strong><br><small>{{ provider.default_model }}</small></td>
+      <td>{{ 'Sim' if provider.configured else 'Não' }}</td>
+      <td>
+        {% if provider.breaker_open is none %}—
+        {% elif provider.breaker_open %}Aberto
+        {% else %}Fechado{% endif %}
+      </td>
+      <td>{{ provider.metrics.successes }}</td>
+      <td>{{ provider.metrics.failures }}</td>
+      <td>{{ provider.metrics.fallbacks }}</td>
+      <td>{{ provider.metrics.latency_ms.p50 }} / {{ provider.metrics.latency_ms.p95 }} ms</td>
+      <td>
+        <form method="post" action="/admin/settings/ai/{{ provider.name }}" class="actions-cell">
+          {{ ui.csrf_field(csrf_token) }}
+          <label class="inline">
+            <input type="checkbox" name="enabled" {{ 'checked' if provider.enabled else '' }}>
+            Ativo
+          </label>
+          <input type="number" name="priority" value="{{ provider.priority }}" step="1" style="width:80px">
+          <button type="submit" class="btn btn-sm">Salvar</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Nenhum provedor declarado.</p>
+{% endif %}
+
+<h2>Uso por plano (últimos {{ usage.days }} dias)</h2>
+{% if usage.usage %}
+<table>
+  <thead>
+    <tr><th>Plano</th><th>Dia</th><th>Mensagens</th><th>Tokens</th></tr>
+  </thead>
+  <tbody>
+    {% for plan, days in usage.usage.items() %}
+    {% for day, bucket in days.items() | sort %}
+    <tr>
+      <td>{{ plan }}</td>
+      <td>{{ day }}</td>
+      <td>{{ bucket.messages }}</td>
+      <td>{{ bucket.tokens }}</td>
+    </tr>
+    {% endfor %}
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Sem dados de uso no período.</p>
+{% endif %}
+
+{% else %}
+{# ------------------------------------------------------------------ #}
+{# Official contacts.                                                 #}
+{# ------------------------------------------------------------------ #}
+<h2>Novo contato</h2>
+<form method="post" action="/admin/settings/contacts">
+  {{ ui.csrf_field(csrf_token) }}
+  <div class="form-group">
+    <label for="new_category">Categoria</label>
+    <select id="new_category" name="category" required>
+      {% for category in categories %}<option value="{{ category }}">{{ category }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="new_name">Nome</label>
+    <input type="text" id="new_name" name="name" required maxlength="200">
+  </div>
+  <div class="form-group">
+    <label for="new_phone">Telefone</label>
+    <input type="text" id="new_phone" name="phone" required maxlength="40">
+  </div>
+  <div class="form-group">
+    <label for="new_region">Região</label>
+    <input type="text" id="new_region" name="region" maxlength="120">
+  </div>
+  <div class="form-group">
+    <label for="new_url">Link</label>
+    <input type="url" id="new_url" name="url" maxlength="500">
+  </div>
+  <div class="form-group">
+    <label for="new_source">Fonte</label>
+    <input type="text" id="new_source" name="source" maxlength="120">
+  </div>
+  <div class="form-group">
+    <label for="new_description">Descrição</label>
+    <input type="text" id="new_description" name="description" maxlength="500">
+  </div>
+  <button type="submit" class="btn">Criar contato</button>
+</form>
+
+<h2>Contatos cadastrados</h2>
+{% if contacts %}
+<table>
+  <thead>
+    <tr><th>Categoria</th><th>Nome</th><th>Telefone</th><th>Região</th><th>Link</th><th>Ações</th></tr>
+  </thead>
+  <tbody>
+    {% for contact in contacts %}
+    <tr>
+      <td>{{ contact.category.value }}</td>
+      <td>{{ contact.name }}</td>
+      <td>{{ contact.phone }}</td>
+      <td>{{ contact.region or '—' }}</td>
+      <td>{% if contact.url %}<a href="{{ contact.url }}">{{ contact.url }}</a>{% else %}—{% endif %}</td>
+      <td>
+        <form method="post" action="/admin/settings/contacts/{{ contact.id }}" class="actions-cell">
+          {{ ui.csrf_field(csrf_token) }}
+          <input type="hidden" name="category" value="{{ contact.category.value }}">
+          <input type="text" name="name" value="{{ contact.name }}" required>
+          <input type="text" name="phone" value="{{ contact.phone }}" required>
+          <input type="text" name="region" value="{{ contact.region or '' }}" placeholder="região">
+          <input type="url" name="url" value="{{ contact.url or '' }}" placeholder="link">
+          <input type="text" name="source" value="{{ contact.source or '' }}" placeholder="fonte">
+          <button type="submit" class="btn btn-sm">Salvar</button>
+        </form>
+        <form method="post" action="/admin/settings/contacts/{{ contact.id }}/delete" class="inline"
+              data-confirm="Remover este contato?">
+          {{ ui.csrf_field(csrf_token) }}
+          <button type="submit" class="btn btn-sm btn-danger">Remover</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Nenhum contato cadastrado.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

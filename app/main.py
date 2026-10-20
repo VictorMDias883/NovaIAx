@@ -39,6 +39,7 @@ APP_DIR = Path(__file__).resolve().parent
 # ---------------------------------------------------------------------------
 from app.api.admin import register_admin_exception_handler  # noqa: E402
 from app.api.admin import router as admin_router  # noqa: E402
+from app.api.public_pages import router as public_pages_router  # noqa: E402
 from app.api.v1.router import router as v1_router  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.health import check_database, check_redis  # noqa: E402
@@ -155,6 +156,11 @@ app.include_router(v1_router, prefix="/api/v1")
 # namespace and handle their own cookie-based authentication (see
 # :mod:`app.api.admin`), so no extra prefix is applied.
 app.include_router(admin_router)
+
+# Public compliance pages (privacy/terms/account deletion).  No auth —
+# a user who wants to leave must be able to request it even if they cannot
+# authenticate anymore (see :mod:`app.api.public_pages`).
+app.include_router(public_pages_router)
 
 # Static assets used by the admin panel templates.
 app.mount("/admin/static", StaticFiles(directory=APP_DIR / "static"), name="admin_static")

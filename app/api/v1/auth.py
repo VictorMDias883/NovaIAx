@@ -12,12 +12,14 @@ Endpoints:
     - GET  /auth/me       — Return the authenticated user's identity.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_session, require_db_user
+from app.api.deps import get_redis_client, get_session, require_db_user
+from app.cache.redis_client import RedisClient
 from app.commands.login_command import LoginCommand
 from app.commands.register_user_command import RegisterUserCommand
+from app.core.network import get_client_ip
 from app.schemas.auth import (
     AuthResponse,
     LoginRequest,
@@ -47,7 +49,9 @@ async def register_user(
         3. Creates the user record.
         4. Issues JWT access and refresh tokens.
 
-    The first user to register becomes an administrator.
+    The first user to register becomes an administrator in non-production
+    environments only; in production the ADMIN role is granted solely via the
+    bootstrap settings.
 
     Args:
         payload: Validated request body with ``full_name``, ``email``,
@@ -58,7 +62,12 @@ async def register_user(
         An :class:`AuthResponse` with the user data and JWT tokens.
     """
     service = AuthService(session)
-    command = RegisterUserCommand(full_name=payload.full_name, email=str(payload.email), password=payload.password)
+    command = RegisterUserCommand(
+        full_name=payload.full_name,
+        email=str(payload.email),
+        password=payload.password,
+        birth_date=payload.birth_date,
+    )
     result = await service.register(command)
     return AuthResponse(**result)
 
@@ -66,26 +75,33 @@ async def register_user(
 @router.post("/login", response_model=AuthResponse)
 async def login(
     payload: LoginRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
+    redis_client: RedisClient = Depends(get_redis_client),
 ) -> AuthResponse:
     """Authenticate a user and return JWT tokens.
 
     The :class:`AuthService` looks up the user by email, verifies the
-    password, and issues JWT tokens on success.
+    password, and issues JWT tokens on success.  The shared Redis client
+    backs the failed-login limiter, so repeat wrong passwords for one
+    address eventually return a 429 instead of a 401.
 
     Args:
         payload: Validated request body with ``email`` and ``password``.
         session: Database session (injected via :func:`get_session`).
+        redis_client: Shared :class:`RedisClient` (injected via
+            :func:`get_redis_client`).
 
     Returns:
         An :class:`AuthResponse` with the user data and JWT tokens.
 
     Raises:
         HTTPException(401): If the email or password is invalid.
+        HTTPException(429): If the address is temporarily locked out.
     """
-    service = AuthService(session)
+    service = AuthService(session, redis_client=redis_client)
     command = LoginCommand(email=str(payload.email), password=payload.password)
-    result = await service.login(command)
+    result = await service.login(command, client_ip=get_client_ip(request))
     return AuthResponse(**result)
 
 
@@ -138,7 +154,7 @@ async def logout(
     try:
         await service.logout(payload.refresh_token, access_token=payload.access_token)
     except HTTPException:
-        raise HTTPException(status_code=401, detail="Invalid refresh token") from None
+        raise HTTPException(status_code=401, detail="Token de atualização inválido.") from None
     return TokenResponse(access_token="", refresh_token="")
 
 

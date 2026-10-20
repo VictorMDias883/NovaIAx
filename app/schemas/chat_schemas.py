@@ -13,6 +13,28 @@ class ChatCompletionRequest(BaseModel):
 
 
 class ChatCompletionResponse(BaseModel):
-    """Response body returned by the AI chat completion endpoint."""
+    """Response body returned by the AI chat completion endpoint.
+
+    ``assistant_message`` is the answer with the personalization marker
+    stripped.  ``why`` (short reasons) and ``sources`` (the memory keys /
+    group / sub-agent slugs that influenced the reply) come from the model's
+    ``[personalization]`` marker and default to empty when the model did not
+    emit one.
+    """
 
     assistant_message: str
+    message_id: str
+    why: list[str] = []
+    sources: list[str] = []
+
+
+class ConversationClearResponse(BaseModel):
+    """Response body returned after clearing a chat conversation.
+
+    Attributes:
+        agent_id: The agent whose conversation was cleared.
+        cleared: Always ``True``; a missing agent yields ``404`` instead.
+    """
+
+    agent_id: int
+    cleared: bool = True

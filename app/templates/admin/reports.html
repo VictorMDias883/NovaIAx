@@ -1,0 +1,76 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Moderação{% endblock %}
+{% block content %}
+<h1>Moderação de relatos</h1>
+{{ ui.flashes(message, error) }}
+
+<div class="filters">
+  <a class="btn btn-sm {{ 'active' if status_filter == '' else '' }}" href="/admin/reports">Todos</a>
+  {% for s in statuses %}
+    <a class="btn btn-sm {{ 'active' if status_filter == s else '' }}" href="/admin/reports?status={{ s }}">{{ s|upper }}</a>
+  {% endfor %}
+</div>
+
+{% if reports %}
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Relato</th>
+      <th>Categoria</th>
+      <th>Autor</th>
+      <th>Sinais</th>
+      <th>Status</th>
+      <th>Ações</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for report in reports %}
+    <tr>
+      <td>{{ report.id }}</td>
+      <td>
+        <strong>{{ report.title }}</strong>
+        <p class="muted">{{ report.description }}</p>
+        {% if report.location %}<p class="muted">Local: {{ report.location }}</p>{% endif %}
+      </td>
+      <td>{{ report.category }}</td>
+      <td>
+        {% if report.is_anonymous %}
+          Anônimo (#{{ report.author_id }})
+        {% else %}
+          #{{ report.author_id }}
+        {% endif %}
+      </td>
+      <td>{{ report.confirmations }} confirmações · {{ report.flags }} denúncias</td>
+      <td>
+        <span class="role-badge role-{{ 'admin' if report.status == 'REMOVED' else 'user' }}">
+          {{ report.status }}
+        </span>
+      </td>
+      <td>
+        <div class="actions-cell">
+          {% for target in statuses %}
+            {% if target != report.status|lower %}
+              <form method="post" action="/admin/reports/{{ report.id }}/status" class="inline"
+                    {% if target == 'removed' %}data-confirm="Remover este relato? Ele ficará visível apenas para o autor."{% endif %}>
+                {{ ui.csrf_field(csrf_token) }}
+                <input type="hidden" name="status" value="{{ target }}">
+                <button type="submit" class="btn btn-sm {{ 'btn-danger' if target == 'removed' else '' }}">
+                  {{ target|upper }}
+                </button>
+              </form>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{{ ui.pager('/admin/reports', page, limit, total, 'relatos', ('&status=' ~ status_filter) if status_filter else '') }}
+{% else %}
+<p>Nenhum relato encontrado.</p>
+{% endif %}
+{% endblock %}

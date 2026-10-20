@@ -17,6 +17,7 @@ The tests import the FastAPI ``app`` instance directly from
 """
 
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 from app.main import app
@@ -49,6 +50,7 @@ def test_login_returns_tokens(client: TestClient) -> None:
             "full_name": "Admin Test",
             "email": "admin@example.com",
             "password": "Password123",
+            "birth_date": "1990-01-01",
         },
     )
     response = client.post(
@@ -110,6 +112,7 @@ def test_logout_revokes_refresh_token(client: TestClient) -> None:
             "full_name": "Logout User",
             "email": "logout@example.com",
             "password": "Password123",
+            "birth_date": "1990-01-01",
         },
     )
     login = client.post(
@@ -134,6 +137,7 @@ def test_refresh_token_still_valid_when_not_logged_out(client: TestClient) -> No
             "full_name": "Refresh User",
             "email": "refresh@example.com",
             "password": "Password123",
+            "birth_date": "1990-01-01",
         },
     )
     login = client.post(
@@ -145,6 +149,102 @@ def test_refresh_token_still_valid_when_not_logged_out(client: TestClient) -> No
 
     refresh = client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
     assert refresh.status_code == 200
+
+
+def test_a_refresh_token_minted_in_the_same_second_as_the_user_is_accepted(client: TestClient) -> None:
+    """Second-precision mismatch between ``iat`` and ``refresh_token_valid_after``.
+
+    A JWT ``iat`` is an integer by specification, while
+    ``refresh_token_valid_after`` is a timestamp with microsecond precision on
+    PostgreSQL.  Comparing them directly rejected any token issued in the same
+    second the account was created or its password was changed, so a user had
+    to wait a second before their first refresh worked.  SQLite's
+    ``CURRENT_TIMESTAMP`` has no fractional part, which is why the suite never
+    saw it.
+    """
+    from app.core.security import decode_token
+    from app.db.session import SessionLocal
+    from app.models.user import User
+    from sqlalchemy import update
+
+    client.post(
+        "/api/v1/auth/register",
+        json={
+            "full_name": "Same Second",
+            "email": "same-second@example.com",
+            "password": "Password123",
+            "birth_date": "1990-01-01",
+        },
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "same-second@example.com", "password": "Password123"},
+    )
+    assert login.status_code == 200
+    refresh_token = login.json()["refresh_token"]
+
+    # A microsecond-precision timestamp inside the token's own second.
+    issued_second = datetime.fromtimestamp(decode_token(refresh_token)["iat"], tz=UTC)
+    stamped = issued_second.replace(microsecond=750_000)
+
+    async def _stamp() -> None:
+        async with SessionLocal() as session:
+            await session.execute(
+                update(User)
+                .where(User.email == "same-second@example.com")
+                .values(refresh_token_valid_after=stamped)
+            )
+            await session.commit()
+
+    asyncio.run(_stamp())
+
+    refresh = client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+    assert refresh.status_code == 200, "a token issued in the same second must be accepted"
+    assert refresh.json()["access_token"]
+
+
+def test_a_refresh_token_older_than_the_password_change_is_still_rejected(client: TestClient) -> None:
+    """The fix must not weaken the invalidation it was protecting.
+
+    A token issued a whole second *before* ``refresh_token_valid_after`` is
+    the case the timestamp exists for: the password changed after the token was
+    minted, so it must stop working.
+    """
+    from app.core.security import decode_token
+    from app.db.session import SessionLocal
+    from app.models.user import User
+    from sqlalchemy import update
+
+    client.post(
+        "/api/v1/auth/register",
+        json={
+            "full_name": "Older Token",
+            "email": "older-token@example.com",
+            "password": "Password123",
+            "birth_date": "1990-01-01",
+        },
+    )
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "older-token@example.com", "password": "Password123"},
+    )
+    refresh_token = login.json()["refresh_token"]
+    issued_at = decode_token(refresh_token)["iat"]
+    changed = datetime.fromtimestamp(issued_at + 1, tz=UTC)
+
+    async def _stamp() -> None:
+        async with SessionLocal() as session:
+            await session.execute(
+                update(User)
+                .where(User.email == "older-token@example.com")
+                .values(refresh_token_valid_after=changed)
+            )
+            await session.commit()
+
+    asyncio.run(_stamp())
+
+    refresh = client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+    assert refresh.status_code == 401
 
 
 def test_api_key_authentication_returns_service_role() -> None:
@@ -185,3 +285,120 @@ def test_api_key_authentication_returns_service_role() -> None:
 
     identity = asyncio.run(run())
     assert identity["role"] == "SERVICE"
+
+
+def test_the_ai_bucket_is_not_polluted_by_ordinary_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ten normal requests must not lock a user out of the assistant.
+
+    Both buckets used a single sorted set keyed only by IP, so ordinary traffic
+    filled the counter and the stricter AI limit was then applied to *that*
+    total: a user who made ten normal requests in a minute got a 429 from every
+    AI endpoint.  Each bucket now has its own window.
+    """
+    from app.cache.redis_client import RedisClient
+    from app.core.config import Settings
+    from app.middlewares.rate_limit_middleware import RateLimitMiddleware
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    settings = Settings(rate_limit_default=60, rate_limit_ai=3, redis_url="redis://127.0.0.1:1/0")
+    RedisClient.reset_all_memory_stores()
+
+    async def plain(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    async def ai(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    app = Starlette(
+        routes=[
+            Route("/plain", plain),
+            Route("/api/v1/agents/general/chat", ai),
+        ]
+    )
+    app.add_middleware(RateLimitMiddleware)
+
+    # The middleware reads the process-wide settings singleton.
+    monkeypatch.setattr("app.middlewares.rate_limit_middleware.get_settings", lambda: settings)
+
+    with TestClient(app) as probe:
+        general = [probe.get("/plain").status_code for _ in range(20)]
+        assert set(general) == {200}, f"ordinary traffic must stay under the general limit: {general}"
+
+        ai_statuses = [probe.get("/api/v1/agents/general/chat").status_code for _ in range(5)]
+
+    assert ai_statuses[0] == 200, "AI must not be blocked by ordinary traffic"
+    assert 429 in ai_statuses, "the AI bucket must still enforce its own stricter limit"
+    assert ai_statuses.count(200) == 3, f"exactly three AI calls fit the limit of 3: {ai_statuses}"
+
+
+def test_ordinary_traffic_is_not_polluted_by_ai_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reverse direction: AI calls must not consume the general allowance."""
+    from app.cache.redis_client import RedisClient
+    from app.core.config import Settings
+    from app.middlewares.rate_limit_middleware import RateLimitMiddleware
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    settings = Settings(rate_limit_default=20, rate_limit_ai=2, redis_url="redis://127.0.0.1:1/0")
+    RedisClient.reset_all_memory_stores()
+
+    async def plain(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    async def ai(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/plain", plain), Route("/api/v1/agents/general/chat", ai)])
+    app.add_middleware(RateLimitMiddleware)
+    monkeypatch.setattr("app.middlewares.rate_limit_middleware.get_settings", lambda: settings)
+
+    with TestClient(app) as probe:
+        for _ in range(5):
+            assert probe.get("/api/v1/agents/general/chat").status_code in (200, 429)
+        general = [probe.get("/plain").status_code for _ in range(20)]
+
+    assert set(general) == {200}, f"AI calls must not eat the general allowance: {general}"
+
+
+def test_the_ai_bucket_is_keyed_per_user_not_per_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Authenticated AI traffic is metered per user id, not per client IP.
+
+    Users behind one NAT/office IP must each get their own budget, and a single
+    account cannot multiply its provider-quota share by rotating IPs.  Here both
+    users share the TestClient's client IP, yet each has an independent window.
+    """
+    from app.cache.redis_client import RedisClient
+    from app.core.config import Settings
+    from app.core.security import create_access_token
+    from app.middlewares.rate_limit_middleware import RateLimitMiddleware
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    settings = Settings(
+        rate_limit_default=60,
+        rate_limit_ai=10,
+        rate_limit_ai_user=2,
+        redis_url="redis://127.0.0.1:1/0",
+    )
+    RedisClient.reset_all_memory_stores()
+
+    async def ai(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/api/v1/agents/general/chat", ai)])
+    app.add_middleware(RateLimitMiddleware)
+    monkeypatch.setattr("app.middlewares.rate_limit_middleware.get_settings", lambda: settings)
+
+    headers_a = {"Authorization": f"Bearer {create_access_token('1', email='a@x.com', role='USER')}"}
+    headers_b = {"Authorization": f"Bearer {create_access_token('2', email='b@x.com', role='USER')}"}
+
+    with TestClient(app) as probe:
+        statuses_a = [probe.get("/api/v1/agents/general/chat", headers=headers_a).status_code for _ in range(3)]
+        statuses_b = [probe.get("/api/v1/agents/general/chat", headers=headers_b).status_code for _ in range(3)]
+
+    assert statuses_a == [200, 200, 429], statuses_a
+    assert statuses_b == [200, 200, 429], statuses_b

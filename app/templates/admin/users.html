@@ -1,24 +1,19 @@
 {% extends "admin/base.html" %}
-{% block title %}Users{% endblock %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Usuários{% endblock %}
 {% block content %}
-<h1>Users</h1>
-
-{% if message %}
-  <div class="flash flash-ok">{{ message }}</div>
-{% endif %}
-{% if error %}
-  <div class="flash flash-error">{{ error }}</div>
-{% endif %}
+<h1>Usuários</h1>
+{{ ui.flashes(message, error) }}
 
 {% if users %}
 <table>
   <thead>
     <tr>
       <th>ID</th>
-      <th>Name</th>
-      <th>Email</th>
-      <th>Role</th>
-      <th>Actions</th>
+      <th>Nome</th>
+      <th>E-mail</th>
+      <th>Papel</th>
+      <th>Ações</th>
     </tr>
   </thead>
   <tbody>
@@ -36,20 +31,20 @@
         <div class="actions-cell">
           {% if user.role == 'ADMIN' %}
             <form method="post" action="/admin/users/{{ user.id }}/demote" class="inline">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="btn btn-sm">Demote</button>
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm">Rebaixar</button>
             </form>
           {% else %}
             <form method="post" action="/admin/users/{{ user.id }}/promote" class="inline">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="btn btn-sm">Promote</button>
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm">Promover</button>
             </form>
           {% endif %}
           {% if user.id|string != admin.id %}
             <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline"
-                  onsubmit="return confirm('Delete user {{ user.email }}?');">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                  data-confirm="Excluir o usuário {{ user.email }}? Esta ação não pode ser desfeita.">
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm btn-danger">Excluir</button>
             </form>
           {% endif %}
         </div>
@@ -59,16 +54,8 @@
   </tbody>
 </table>
 
-<div class="pagination">
-  {% if page > 1 %}
-    <a href="/admin/users?page={{ page - 1 }}">Previous</a>
-  {% endif %}
-  <span>Page {{ page }} of {{ ((total + limit - 1) // limit) or 1 }} ({{ total }} users)</span>
-  {% if page * limit < total %}
-    <a href="/admin/users?page={{ page + 1 }}">Next</a>
-  {% endif %}
-</div>
+{{ ui.pager('/admin/users', page, limit, total, 'usuários') }}
 {% else %}
-<p>No users found.</p>
+<p>Nenhum usuário encontrado.</p>
 {% endif %}
 {% endblock %}

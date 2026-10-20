@@ -1,0 +1,117 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}{{ 'Novo' if not item else 'Editar' }} {{ label }}{% endblock %}
+{% block content %}
+<h1>{{ 'Novo' if not item else 'Editar' }} {{ label|lower }}</h1>
+{{ ui.flashes(message, error) }}
+
+<form method="post" action="{{ '/admin/agents/' ~ entity ~ ('/' ~ item.id if item else '') }}">
+  {{ ui.csrf_field(csrf_token) }}
+
+  {% if entity in ('group', 'sub_agent') %}
+  <div class="form-group">
+    <label for="name">Nome</label>
+    <input type="text" id="name" name="name" value="{{ item.name if item else '' }}" required maxlength="120">
+  </div>
+  {% if not item %}
+  <div class="form-group">
+    <label for="slug">Identificador (slug)</label>
+    <input type="text" id="slug" name="slug" required maxlength="80"
+           pattern="[a-z0-9_]+" title="Use apenas letras minúsculas, números e _">
+    <small>Não poderá ser alterado depois. Usado na seleção do usuário.</small>
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {% if entity == 'agent' %}
+  <div class="form-group">
+    <label for="tipo">Nome do agente</label>
+    <input type="text" id="tipo" name="tipo" value="{{ item.tipo if item else '' }}" required maxlength="100">
+  </div>
+  {% endif %}
+
+  {% if entity == 'sub_agent' %}
+  <div class="form-group">
+    <label for="group_id">Grupo</label>
+    <select id="group_id" name="group_id">
+      <option value="">— sem grupo —</option>
+      {% for group in group_options %}
+      <option value="{{ group.id }}" {{ 'selected' if item and item.group_id == group.id else '' }}>{{ group.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+
+  <div class="form-group">
+    <label for="description">Descrição</label>
+    <textarea id="description" name="description" maxlength="2000">{{ item.description if item else '' }}</textarea>
+  </div>
+
+  <div class="form-group">
+    <label for="icon">Ícone</label>
+    <input type="text" id="icon" name="icon" maxlength="50"
+           value="{{ item.icon if item else ('🤖' if entity == 'agent' else '🧩') }}">
+  </div>
+
+  <div class="form-group">
+    <label for="audience">Público-alvo</label>
+    <input type="text" id="audience" name="audience" maxlength="120" value="{{ item.audience if item else '' }}">
+  </div>
+
+  {% if entity in ('sub_agent', 'agent') %}
+  <div class="form-group">
+    <label for="min_plan">Plano mínimo</label>
+    <select id="min_plan" name="min_plan">
+      {% for plan in ['free', 'trial', 'starter', 'pro', 'premium'] %}
+      <option value="{{ plan }}" {{ 'selected' if item and item.min_plan == plan else '' }}>{{ plan }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+
+  <div class="form-group">
+    <label for="sort_order">Ordem</label>
+    <input type="number" id="sort_order" name="sort_order" value="{{ item.sort_order if item else 0 }}">
+  </div>
+
+  <div class="form-group">
+    <label>
+      <input type="checkbox" name="active" value="1" {{ 'checked' if not item or item.active else '' }}>
+      Ativo
+    </label>
+  </div>
+
+  <div class="form-group">
+    <label for="system_prompt">Prompt</label>
+    <textarea id="system_prompt" name="system_prompt" rows="10" maxlength="{{ max_chars }}"
+              data-counter="system_prompt">{{ item.system_prompt if item else '' }}</textarea>
+    <small class="counter" data-counter-for="system_prompt">0 / {{ max_chars }}</small>
+    <small>O aviso de segurança da plataforma é sempre aplicado por cima deste texto.</small>
+  </div>
+
+  <div class="form-group">
+    <label for="note">Nota da versão (opcional)</label>
+    <input type="text" id="note" name="note" maxlength="200">
+  </div>
+
+  <div class="actions">
+    <button type="submit" class="btn">Salvar</button>
+    <a class="btn" href="/admin/agents?tab={{ entity }}">Cancelar</a>
+    {% if item %}<a class="btn" href="/admin/agents/{{ entity }}/{{ item.id }}/versions">Versões</a>{% endif %}
+  </div>
+</form>
+
+{% if entity == 'agent' %}
+<h2>Testar este agente</h2>
+<p>Envia uma mensagem de exemplo usando este prompt, sem salvar.</p>
+<form method="post" action="/admin/agents/test">
+  {{ ui.csrf_field(csrf_token) }}
+  <div class="form-group">
+    <label for="sample_message">Mensagem de exemplo</label>
+    <textarea id="sample_message" name="sample_message" rows="3" maxlength="2000" required></textarea>
+  </div>
+  <textarea id="draft_prompt" name="draft_prompt" hidden>{{ item.system_prompt if item else '' }}</textarea>
+  <button type="submit" class="btn">Testar</button>
+</form>
+{% endif %}
+{% endblock %}

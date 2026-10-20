@@ -1,0 +1,41 @@
+{% extends "public/base.html" %}
+{% block title %}Exclusão de conta · NovaIAx{% endblock %}
+{% block content %}
+  <h1>Exclusão de conta</h1>
+  <p class="muted">
+    Removemos sua conta e todos os seus dados de forma permanente.
+  </p>
+
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+  <div class="card">
+    <h2>Opção 1 — Confirmação imediata (recomendado)</h2>
+    <p>
+      Informe o e-mail e a senha da conta. A exclusão é executada na hora e
+      não pode ser desfeita.
+    </p>
+    <form method="post" action="/account-deletion/request">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="email">E-mail</label>
+      <input type="email" id="email" name="email" required autocomplete="email">
+      <label for="password">Senha</label>
+      <input type="password" id="password" name="password" autocomplete="current-password">
+      <button type="submit">Excluir minha conta</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Opção 2 — Solicitação sem senha</h2>
+    <p>
+      Não lembra a senha ou não quer informá-la? Preencha apenas o e-mail e
+      envie a solicitação. Nossa equipe entrará em contato para concluir a
+      exclusão em até 30 dias.
+    </p>
+    <form method="post" action="/account-deletion/request">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="email-only">E-mail</label>
+      <input type="email" id="email-only" name="email" required autocomplete="email">
+      <button type="submit">Solicitar exclusão</button>
+    </form>
+  </div>
+{% endblock %}

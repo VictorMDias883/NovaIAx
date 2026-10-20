@@ -226,6 +226,68 @@ def test_set_day_status_objective_not_found() -> None:
     asyncio.run(_run(scenario))
 
 
+def test_delete_day_removes_the_day() -> None:
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        objective = await _create_objective(session, user.id)
+        service = RoadmapDayService(session)
+        days = await service.create_days(objective.id, datetime.now(UTC), datetime.now(UTC) + timedelta(days=6))
+        target = days[2]
+
+        await service.delete_day(objective_id=objective.id, day_id=target.id, user_id=user.id, role="USER")
+
+        remaining = await service.list_days(objective.id, user.id, "USER")
+        assert [d.id for d in remaining] == [d.id for d in days if d.id != target.id]
+        assert [d.day_number for d in remaining] == [1, 2, 4, 5, 6, 7]
+
+    asyncio.run(_run(scenario))
+
+
+def test_delete_day_denied_for_non_owner() -> None:
+    async def scenario(session) -> None:
+        owner = await _create_user(session, email="owner@example.com")
+        other = await _create_user(session, email="other@example.com")
+        objective = await _create_objective(session, owner.id)
+        service = RoadmapDayService(session)
+        days = await service.create_days(objective.id, datetime.now(UTC), datetime.now(UTC) + timedelta(days=6))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.delete_day(
+                objective_id=objective.id,
+                day_id=days[0].id,
+                user_id=other.id,
+                role="USER",
+            )
+        assert exc_info.value.status_code == 403
+
+    asyncio.run(_run(scenario))
+
+
+def test_delete_day_not_found() -> None:
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        objective = await _create_objective(session, user.id)
+        service = RoadmapDayService(session)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.delete_day(objective_id=objective.id, day_id=999, user_id=user.id, role="USER")
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(_run(scenario))
+
+
+def test_delete_day_objective_not_found() -> None:
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        service = RoadmapDayService(session)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await service.delete_day(objective_id=999, day_id=1, user_id=user.id, role="USER")
+        assert exc_info.value.status_code == 404
+
+    asyncio.run(_run(scenario))
+
+
 def test_register_objective_creates_roadmap_days() -> None:
     async def scenario(session) -> None:
         user = await _create_user(session)

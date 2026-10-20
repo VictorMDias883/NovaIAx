@@ -1,25 +1,37 @@
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Admin{% endblock %} · NovaIAx</title>
+  <title>{% block title %}Painel{% endblock %} · NovaIAx</title>
   <link rel="stylesheet" href="/admin/static/admin.css">
+  <script src="/admin/static/admin.js" nonce="{{ csp_nonce }}" defer></script>
 </head>
-<body>
-  <nav class="topnav">
-    <span class="brand">NovaIAx Admin</span>
-    <div class="links">
-      <a href="/admin">Dashboard</a>
-      <a href="/admin/users">Users</a>
-      <a href="/admin/system-prompts">System Prompts</a>
-      <span class="user">{{ admin.full_name }} ({{ admin.email }})</span>
-      <form method="post" action="/admin/logout" class="inline">
+<body class="layout">
+  <aside class="sidebar">
+    <div class="brand">NovaIAx<span>Console</span></div>
+    <nav class="nav">
+      <a href="/admin/" class="{{ 'active' if active == 'dashboard' else '' }}">Dashboard</a>
+      <a href="/admin/users" class="{{ 'active' if active == 'users' else '' }}">Usuários</a>
+      <a href="/admin/agents" class="{{ 'active' if active == 'agents' else '' }}">Agentes</a>
+      <a href="/admin/promotions" class="{{ 'active' if active == 'promotions' else '' }}">Promoções</a>
+      <a href="/admin/settings" class="{{ 'active' if active == 'settings' else '' }}">Configurações</a>
+      <a href="/admin/system-prompts" class="{{ 'active' if active == 'prompts' else '' }}">Prompts do sistema</a>
+      <a href="/admin/reports" class="{{ 'active' if active == 'reports' else '' }}">Moderação</a>
+      <a href="/admin/audit" class="{{ 'active' if active == 'audit' else '' }}">Auditoria</a>
+      <a href="/admin/security/totp" class="{{ 'active' if active == 'security' else '' }}">Segurança</a>
+    </nav>
+    <div class="sidebar-footer">
+      <span class="user">
+        {{ admin.full_name }}
+        <small>{{ admin.email }}</small>
+      </span>
+      <form method="post" action="/admin/logout">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button type="submit" class="btn btn-sm">Logout</button>
+        <button type="submit" class="btn btn-sm">Sair</button>
       </form>
     </div>
-  </nav>
+  </aside>
   <main class="container">
     {% block content %}{% endblock %}
   </main>

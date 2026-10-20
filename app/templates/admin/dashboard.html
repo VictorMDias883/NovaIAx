@@ -1,25 +1,61 @@
 {% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <h1>Dashboard</h1>
+{{ ui.flashes(message, None) }}
 
 <section class="stats">
   <div class="card">
     <span class="num">{{ stats.total_users }}</span>
-    <span class="label">Users</span>
+    <span class="label">Usuários</span>
   </div>
   <div class="card">
     <span class="num">{{ stats.total_admins }}</span>
-    <span class="label">Administrators</span>
+    <span class="label">Administradores</span>
+  </div>
+  <div class="card">
+    <span class="num">{{ stats.active_subscriptions_total }}</span>
+    <span class="label">Assinaturas ativas</span>
+  </div>
+  <div class="card">
+    <span class="num">{{ stats.messages_today }}</span>
+    <span class="label">Mensagens de IA hoje</span>
+  </div>
+  <div class="card">
+    <span class="num">{{ stats.open_reports }}</span>
+    <span class="label">Relatos aguardando</span>
   </div>
   <div class="card">
     <span class="num">{{ stats.total_prompts }}</span>
-    <span class="label">System prompts</span>
+    <span class="label">Prompts do sistema</span>
   </div>
 </section>
 
+<section class="card">
+  <h2>Assinaturas ativas por plano</h2>
+  {% if stats.active_subscriptions %}
+  <table>
+    <thead><tr><th>Plano</th><th>Assinantes</th></tr></thead>
+    <tbody>
+      {% for row in stats.active_subscriptions %}
+      <tr><td>{{ row.plan|capitalize }}</td><td>{{ row.count }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">Nenhuma assinatura ativa no momento.</p>
+  {% endif %}
+</section>
+
+<p class="muted privacy-note">
+  Este painel exibe apenas números agregados. O conteúdo de conversas, anotações,
+  saúde, finanças e estudos de usuários nunca é acessível por administradores.
+</p>
+
 <section class="actions">
-  <a class="btn" href="/admin/users">Manage users</a>
-  <a class="btn" href="/admin/system-prompts">Manage system prompts</a>
+  <a class="btn" href="/admin/users">Gerenciar usuários</a>
+  <a class="btn" href="/admin/system-prompts">Configurações</a>
+  <a class="btn" href="/admin/reports">Moderação</a>
 </section>
 {% endblock %}

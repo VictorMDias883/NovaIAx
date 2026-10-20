@@ -1,0 +1,121 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Agentes{% endblock %}
+{% block content %}
+<h1>Agentes</h1>
+{{ ui.flashes(message, error) }}
+
+<nav class="tabs">
+  {% for key, label in labels.items() %}
+  <a href="/admin/agents?tab={{ key }}" class="{{ 'active' if tab == key else '' }}">{{ label }}s</a>
+  {% endfor %}
+</nav>
+
+<div class="toolbar">
+  <a class="btn" href="/admin/agents/{{ tab }}/new">Novo {{ labels[tab]|lower }}</a>
+</div>
+
+{% if tab == 'group' %}
+  {% if groups %}
+  <table>
+    <thead>
+      <tr><th>Ordem</th><th>Nome</th><th>Slug</th><th>Ativo</th><th>Ações</th></tr>
+    </thead>
+    <tbody>
+      {% for group in groups %}
+      <tr>
+        <td>{{ group.sort_order }}</td>
+        <td>{{ group.icon }} {{ group.name }}</td>
+        <td><code>{{ group.slug }}</code></td>
+        <td>{{ 'Sim' if group.active else 'Não' }}</td>
+        <td>
+          <div class="actions-cell">
+            <a class="btn btn-sm" href="/admin/agents/group/{{ group.id }}/edit">Editar</a>
+            <a class="btn btn-sm" href="/admin/agents/group/{{ group.id }}/versions">Versões</a>
+            <form method="post" action="/admin/agents/group/{{ group.id }}/toggle" class="inline">
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm">{{ 'Desativar' if group.active else 'Ativar' }}</button>
+            </form>
+            <form method="post" action="/admin/agents/group/{{ group.id }}/duplicate" class="inline">
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm">Duplicar</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>Nenhum grupo cadastrado.</p>
+  {% endif %}
+{% elif tab == 'sub_agent' %}
+  {% if sub_agents %}
+  <table>
+    <thead>
+      <tr><th>Ordem</th><th>Nome</th><th>Slug</th><th>Ativo</th><th>Ações</th></tr>
+    </thead>
+    <tbody>
+      {% for sub in sub_agents %}
+      <tr>
+        <td>{{ sub.sort_order }}</td>
+        <td>{{ sub.icon }} {{ sub.name }}</td>
+        <td><code>{{ sub.slug }}</code></td>
+        <td>{{ 'Sim' if sub.active else 'Não' }}</td>
+        <td>
+          <div class="actions-cell">
+            <a class="btn btn-sm" href="/admin/agents/sub_agent/{{ sub.id }}/edit">Editar</a>
+            <a class="btn btn-sm" href="/admin/agents/sub_agent/{{ sub.id }}/versions">Versões</a>
+            <form method="post" action="/admin/agents/sub_agent/{{ sub.id }}/toggle" class="inline">
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm">{{ 'Desativar' if sub.active else 'Ativar' }}</button>
+            </form>
+            <form method="post" action="/admin/agents/sub_agent/{{ sub.id }}/duplicate" class="inline">
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm">Duplicar</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>Nenhum sub-agente cadastrado.</p>
+  {% endif %}
+{% else %}
+  {% if agents %}
+  <table>
+    <thead>
+      <tr><th>Ordem</th><th>Agente</th><th>Plano mín.</th><th>Ativo</th><th>Ações</th></tr>
+    </thead>
+    <tbody>
+      {% for agent in agents %}
+      <tr>
+        <td>{{ agent.sort_order }}</td>
+        <td>{{ agent.icon }} {{ agent.tipo }}</td>
+        <td>{{ agent.min_plan }}</td>
+        <td>{{ 'Sim' if agent.active else 'Não' }}</td>
+        <td>
+          <div class="actions-cell">
+            <a class="btn btn-sm" href="/admin/agents/agent/{{ agent.id }}/edit">Editar</a>
+            <a class="btn btn-sm" href="/admin/agents/agent/{{ agent.id }}/versions">Versões</a>
+            <form method="post" action="/admin/agents/agent/{{ agent.id }}/toggle" class="inline">
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm">{{ 'Desativar' if agent.active else 'Ativar' }}</button>
+            </form>
+            <form method="post" action="/admin/agents/agent/{{ agent.id }}/duplicate" class="inline">
+              {{ ui.csrf_field(csrf_token) }}
+              <button type="submit" class="btn btn-sm">Duplicar</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>Nenhum agente cadastrado.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

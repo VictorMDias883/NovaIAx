@@ -1,0 +1,94 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}{{ 'Editar' if promotion else 'Nova' }} promoção{% endblock %}
+{% block content %}
+<h1>{{ 'Editar' if promotion else 'Nova' }} promoção</h1>
+{{ ui.flashes(message, error) }}
+
+{% if promotion %}
+<div class="card preview-card">
+  <strong>Pré-visualização</strong>
+  <div class="promo-card">
+    {% if promotion.image_url %}<img src="{{ promotion.image_url }}" alt="" class="promo-image">{% endif %}
+    <div class="promo-title">{{ promotion.emoji or '' }} {{ promotion.title }}</div>
+    <p class="promo-message">{{ promotion.message }}</p>
+    {% if promotion.cta_label %}<span class="btn btn-sm">{{ promotion.cta_label }}</span>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+<form method="post" action="{{ '/admin/promotions/' ~ promotion.id if promotion else '/admin/promotions' }}">
+  {{ ui.csrf_field(csrf_token) }}
+  <div class="form-group">
+    <label for="title">Título</label>
+    <input type="text" id="title" name="title" required maxlength="120" value="{{ promotion.title if promotion else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="message">Mensagem</label>
+    <textarea id="message" name="message" required>{{ promotion.message if promotion else '' }}</textarea>
+  </div>
+  <div class="form-group">
+    <label for="emoji">Emoji</label>
+    <input type="text" id="emoji" name="emoji" maxlength="20" value="{{ promotion.emoji if promotion and promotion.emoji else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="image_url">URL da imagem</label>
+    <input type="text" id="image_url" name="image_url" maxlength="500" value="{{ promotion.image_url if promotion and promotion.image_url else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="cta_label">Rótulo do botão</label>
+    <input type="text" id="cta_label" name="cta_label" maxlength="60" value="{{ promotion.cta_label if promotion and promotion.cta_label else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="cta_target">Destino do botão</label>
+    <select id="cta_target" name="cta_target">
+      {% for target in cta_targets %}
+      <option value="{{ target }}" {{ 'selected' if promotion and promotion.cta_target == target else '' }}>{{ target }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="cta_url">URL do botão (quando destino = url)</label>
+    <input type="text" id="cta_url" name="cta_url" maxlength="500" value="{{ promotion.cta_url if promotion and promotion.cta_url else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="audience">Público</label>
+    <select id="audience" name="audience">
+      {% for audience in audiences %}
+      <option value="{{ audience }}" {{ 'selected' if promotion and promotion.audience == audience else '' }}>{{ audience }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="audience_plans">Planos do público (separados por vírgula)</label>
+    <input type="text" id="audience_plans" name="audience_plans"
+           value="{{ (promotion.audience_plans or [])|join(', ') if promotion else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="audience_groups">Grupos do público (slugs separados por vírgula)</label>
+    <input type="text" id="audience_groups" name="audience_groups"
+           value="{{ (promotion.audience_groups or [])|join(', ') if promotion else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="starts_at">Início</label>
+    <input type="datetime-local" id="starts_at" name="starts_at"
+           value="{{ promotion.starts_at.strftime('%Y-%m-%dT%H:%M') if promotion and promotion.starts_at else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="ends_at">Fim</label>
+    <input type="datetime-local" id="ends_at" name="ends_at"
+           value="{{ promotion.ends_at.strftime('%Y-%m-%dT%H:%M') if promotion and promotion.ends_at else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="priority">Prioridade</label>
+    <input type="number" id="priority" name="priority" value="{{ promotion.priority if promotion else 0 }}">
+  </div>
+  <div class="form-group">
+    <label><input type="checkbox" name="active" value="true" {{ 'checked' if not promotion or promotion.active else '' }}> Ativo</label>
+  </div>
+  <div class="actions">
+    <button type="submit" class="btn">Salvar</button>
+    <a class="btn" href="/admin/promotions?tab=promotions">Cancelar</a>
+  </div>
+</form>
+{% endblock %}

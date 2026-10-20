@@ -1,38 +1,33 @@
 {% extends "admin/base.html" %}
-{% block title %}System Prompts{% endblock %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Configurações{% endblock %}
 {% block content %}
-<h1>System Prompts</h1>
+<h1>Prompts do sistema</h1>
+{{ ui.flashes(message, error) }}
 
-{% if message %}
-  <div class="flash flash-ok">{{ message }}</div>
-{% endif %}
-{% if error %}
-  <div class="flash flash-error">{{ error }}</div>
-{% endif %}
-
-<h2>New prompt</h2>
+<h2>Novo prompt</h2>
 <form method="post" action="/admin/system-prompts">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {{ ui.csrf_field(csrf_token) }}
   <div class="form-group">
-    <label for="tipo">Type</label>
+    <label for="tipo">Tipo</label>
     <input type="text" id="tipo" name="tipo" required maxlength="100">
   </div>
   <div class="form-group">
     <label for="system_prompt">Prompt</label>
     <textarea id="system_prompt" name="system_prompt" required maxlength="5000"></textarea>
   </div>
-  <button type="submit" class="btn">Create</button>
+  <button type="submit" class="btn">Criar</button>
 </form>
 
-<h2>Existing prompts</h2>
+<h2>Prompts existentes</h2>
 {% if prompts %}
 <table>
   <thead>
     <tr>
       <th>ID</th>
-      <th>Type</th>
+      <th>Tipo</th>
       <th>Prompt</th>
-      <th>Actions</th>
+      <th>Ações</th>
     </tr>
   </thead>
   <tbody>
@@ -43,11 +38,11 @@
       <td><div class="prompt-preview" title="{{ prompt.system_prompt }}">{{ prompt.system_prompt }}</div></td>
       <td>
         <div class="actions-cell">
-          <a class="btn btn-sm" href="/admin/system-prompts/{{ prompt.id }}/edit">Edit</a>
+          <a class="btn btn-sm" href="/admin/system-prompts/{{ prompt.id }}/edit">Editar</a>
           <form method="post" action="/admin/system-prompts/{{ prompt.id }}/delete" class="inline"
-                onsubmit="return confirm('Delete this system prompt?');">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                data-confirm="Excluir este prompt do sistema?">
+            {{ ui.csrf_field(csrf_token) }}
+            <button type="submit" class="btn btn-sm btn-danger">Excluir</button>
           </form>
         </div>
       </td>
@@ -56,16 +51,8 @@
   </tbody>
 </table>
 
-<div class="pagination">
-  {% if page > 1 %}
-    <a href="/admin/system-prompts?page={{ page - 1 }}">Previous</a>
-  {% endif %}
-  <span>Page {{ page }} of {{ ((total + limit - 1) // limit) or 1 }} ({{ total }} prompts)</span>
-  {% if page * limit < total %}
-    <a href="/admin/system-prompts?page={{ page + 1 }}">Next</a>
-  {% endif %}
-</div>
+{{ ui.pager('/admin/system-prompts', page, limit, total, 'prompts') }}
 {% else %}
-<p>No system prompts found.</p>
+<p>Nenhum prompt do sistema encontrado.</p>
 {% endif %}
 {% endblock %}

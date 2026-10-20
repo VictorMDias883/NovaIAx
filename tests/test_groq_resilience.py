@@ -33,6 +33,7 @@ from app.cache.conversation_cache import (
 from app.cache.redis_client import RedisClient
 from app.clients.ai_client import GroqAIClient, _GroqPacer
 from app.core.config import Settings
+from app.exceptions.ai_errors import AIErrorCode
 from fastapi import HTTPException
 
 _SUCCESS_BODY = {"choices": [{"message": {"content": " ok "}}]}
@@ -205,7 +206,9 @@ def test_exhausted_retries_surface_429_with_retry_after(monkeypatch: pytest.Monk
 
     assert client.calls == 3
     assert exc_info.value.status_code == 429
-    assert exc_info.value.detail == "AI provider rate limit exceeded: rate limited"
+    assert exc_info.value.code is AIErrorCode.RATE_LIMITED
+    assert exc_info.value.detail.startswith("O serviço de inteligência artificial está com a cota esgotada")
+    assert exc_info.value.detail.endswith("(rate limited)"), "Groq's own diagnosis must stay available"
     assert exc_info.value.headers == {"Retry-After": "5"}
 
 

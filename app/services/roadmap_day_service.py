@@ -3,8 +3,8 @@ Service layer for roadmap-day management.
 
 This service handles the business logic for tracking individual days of
 an objective's roadmap: creating the days whenever a roadmap window is
-generated, listing them for the owner, and updating their status (e.g.
-marking a day as fulfilled).
+generated, listing them for the owner, updating their status (e.g.
+marking a day as fulfilled), and removing a day from the roadmap.
 
     Router → Command → Service → Repository → Database
 """
@@ -17,10 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.roadmap_day import RoadmapDay, RoadmapDayStatus
 from app.repositories.objective_repository import ObjectiveRepository
 from app.repositories.roadmap_day_repository import RoadmapDayRepository
+from app.utils.datetime_utils import ensure_aware
 
 
 class RoadmapDayService:
-    """Service for creating, listing, and updating roadmap days."""
+    """Service for creating, listing, updating, and deleting roadmap days."""
 
     def __init__(self, session: AsyncSession) -> None:
         """Initialise the service with a database session.
@@ -38,6 +39,7 @@ class RoadmapDayService:
         period_start: datetime,
         period_end: datetime,
         contents: dict[int, str] | None = None,
+        commit: bool = True,
     ) -> list[RoadmapDay]:
         """Create one roadmap day per calendar date in the given window.
 
@@ -51,14 +53,18 @@ class RoadmapDayService:
             period_start: Start of the window (timezone-aware).
             period_end: End of the window (timezone-aware).
             contents: Optional mapping of ``day_number`` → day meta.
+            commit: Whether to commit the days.  ``False`` leaves both the
+                content updates and the inserts pending in the caller's
+                transaction, so the objective row and its days are persisted
+                together by a single commit (all-or-nothing).
 
         Returns:
             The list of created :class:`RoadmapDay` instances.
         """
-        start = self._ensure_aware(period_start)
-        end = self._ensure_aware(period_end)
+        start = ensure_aware(period_start)
+        end = ensure_aware(period_end)
         if end.date() < start.date():
-            raise HTTPException(status_code=400, detail="period_end cannot precede period_start")
+            raise HTTPException(status_code=400, detail="period_end não pode ser anterior a period_start.")
 
         start_date = start.date()
         end_date = end.date()
@@ -71,11 +77,9 @@ class RoadmapDayService:
         existing = await self.day_repo.list_by_objective(objective_id)
         existing_map: dict = {d.day_date.date(): d for d in existing}
 
-        # Prepare lists: `to_create` holds new RoadmapDay instances to persist,
-        # `result_days` will accumulate either existing or newly created days
-        # in window order.
+        # `to_create` holds unsaved RoadmapDay instances; `existing_to_refresh`
+        # collects already-persisted days whose content the renewal rewrites.
         to_create: list[RoadmapDay] = []
-        result_days: list[RoadmapDay] = []
         existing_to_refresh: list[RoadmapDay] = []
 
         for day_number in range(1, total + 1):
@@ -91,7 +95,6 @@ class RoadmapDayService:
                 if content and content != existing_day.content:
                     existing_day.content = content
                     existing_to_refresh.append(existing_day)
-                result_days.append(existing_day)
             else:
                 # Create an unsaved RoadmapDay instance to be persisted.
                 to_create.append(
@@ -104,13 +107,17 @@ class RoadmapDayService:
                     )
                 )
 
-        if existing_to_refresh:
-            await self.session.commit()
-
-        # Persist any newly created days and refresh them to obtain IDs.
+        # Persist the window in one statement, honouring the caller's
+        # transaction ownership.  `create_many` populates the new rows'
+        # primary keys during the flush, so no per-row reload is needed.
         created: list[RoadmapDay] = []
         if to_create:
-            created = await self.day_repo.create_many(to_create)
+            created = await self.day_repo.create_many(to_create, commit=commit)
+
+        if existing_to_refresh and commit:
+            # Content updates on already-persisted days only need a flush;
+            # if ``create_many`` already committed they are already durable.
+            await self.session.commit()
 
         # Merge existing and created days preserving window order.
         # Build a mapping for created days by date for quick lookup.
@@ -145,9 +152,9 @@ class RoadmapDayService:
         """
         objective = await self.objective_repo.get_by_id(objective_id)
         if objective is None:
-            raise HTTPException(status_code=404, detail="Objective not found")
+            raise HTTPException(status_code=404, detail="Objetivo não encontrado.")
         if str(user_id) != str(objective.user_id) and role != "ADMIN":
-            raise HTTPException(status_code=403, detail="Not authorized")
+            raise HTTPException(status_code=403, detail="Não autorizado.")
         return await self.day_repo.list_by_objective(objective_id)
 
     async def set_day_status(
@@ -181,28 +188,53 @@ class RoadmapDayService:
         """
         objective = await self.objective_repo.get_by_id(objective_id)
         if objective is None:
-            raise HTTPException(status_code=404, detail="Objective not found")
+            raise HTTPException(status_code=404, detail="Objetivo não encontrado.")
         if str(user_id) != str(objective.user_id) and role != "ADMIN":
-            raise HTTPException(status_code=403, detail="Not authorized")
+            raise HTTPException(status_code=403, detail="Não autorizado.")
 
         day = await self.day_repo.get_by_id(day_id)
         if day is None or day.objective_id != objective_id:
-            raise HTTPException(status_code=404, detail="Roadmap day not found")
+            raise HTTPException(status_code=404, detail="Dia do roteiro não encontrado.")
 
         completed_at = datetime.now(UTC) if status == RoadmapDayStatus.COMPLETED else None
         updated = await self.day_repo.update_status(day_id, status=status, completed_at=completed_at)
         if updated is None:
-            raise HTTPException(status_code=404, detail="Roadmap day not found")
+            raise HTTPException(status_code=404, detail="Dia do roteiro não encontrado.")
         return updated
 
-    @staticmethod
-    def _ensure_aware(value: datetime) -> datetime:
-        """Return the datetime with UTC timezone, assuming UTC for naive values.
+    async def delete_day(
+        self,
+        objective_id: int,
+        day_id: int,
+        user_id: int,
+        role: str,
+    ) -> None:
+        """Remove a single day from an objective's roadmap.
 
-        Some drivers (e.g. SQLite) return timezone-naive datetimes even
-        for ``DateTime(timezone=True)`` columns, so comparisons against
-        ``datetime.now(UTC)`` need this normalisation.
+        The day is hard-deleted. Remaining days keep their original
+        ``day_number`` (no renumbering), and a later roadmap renewal
+        simply regenerates the window without the deleted day.
+
+        Args:
+            objective_id: ID of the objective owning the day.
+            day_id: ID of the roadmap day to remove.
+            user_id: ID of the requesting user.
+            role: The requesting user's role (``"ADMIN"`` can delete
+                days of any objective).
+
+        Raises:
+            HTTPException(404): If the objective or the day does not exist.
+            HTTPException(403): If the user does not own the objective
+                and is not an administrator.
         """
-        if value.tzinfo is None:
-            return value.replace(tzinfo=UTC)
-        return value
+        objective = await self.objective_repo.get_by_id(objective_id)
+        if objective is None:
+            raise HTTPException(status_code=404, detail="Objetivo não encontrado.")
+        if str(user_id) != str(objective.user_id) and role != "ADMIN":
+            raise HTTPException(status_code=403, detail="Não autorizado.")
+
+        day = await self.day_repo.get_by_id(day_id)
+        if day is None or day.objective_id != objective_id:
+            raise HTTPException(status_code=404, detail="Dia do roteiro não encontrado.")
+
+        await self.day_repo.delete(day_id)

@@ -1,0 +1,56 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Conceder plano{% endblock %}
+{% block content %}
+<h1>Conceder plano a usuário</h1>
+{{ ui.flashes(message, error) }}
+
+<p>Concessão complementar (sem cobrança). O plano efetivo passa a ser o mais
+alto entre a assinatura do Google Play e esta concessão, até a data final.</p>
+
+<form method="post" action="/admin/promotions/grants">
+  {{ ui.csrf_field(csrf_token) }}
+  <div class="form-group">
+    <label for="user_id">ID do usuário</label>
+    <input type="number" id="user_id" name="user_id" min="1" required>
+  </div>
+  <div class="form-group">
+    <label for="plan">Plano</label>
+    <select id="plan" name="plan">
+      {% for plan in plans %}
+      <option value="{{ plan }}">{{ plan }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="duration_days">Duração (dias)</label>
+    <input type="number" id="duration_days" name="duration_days" min="1" max="3650" value="30" required>
+  </div>
+  <div class="form-group">
+    <label for="reason">Motivo</label>
+    <input type="text" id="reason" name="reason" maxlength="255">
+  </div>
+  <button type="submit" class="btn">Conceder</button>
+</form>
+
+<h2>Concessões recentes</h2>
+{% if grants %}
+<table>
+  <thead>
+    <tr><th>Usuário</th><th>Plano</th><th>Concedido até</th><th>Motivo</th></tr>
+  </thead>
+  <tbody>
+    {% for grant in grants %}
+    <tr>
+      <td>{{ grant.user_id }}</td>
+      <td>{{ grant.plan }}</td>
+      <td>{{ grant.granted_until or '—' }}</td>
+      <td>{{ grant.reason or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Nenhuma concessão manual registrada.</p>
+{% endif %}
+{% endblock %}

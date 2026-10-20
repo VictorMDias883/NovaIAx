@@ -46,19 +46,31 @@ _last_redis_attempt: float | None = None
 # these classes would otherwise fail with "set is not valid as a type".
 _Set = set
 
+#: How many keys are sent per pipelined ``UNLINK``/``DEL`` batch.  Large
+#: enough that a per-user flush needs a handful of round-trips instead of
+#: hundreds, small enough to keep each pipeline's reply payload modest.
+_DELETE_PIPELINE_CHUNK = 500
+
 
 class InMemoryStore:
     """A minimal in-memory key-value store that mimics a subset of Redis.
 
     This is used as a fallback when Redis is not available.  It supports:
-        - String get/set/delete (with optional TTL — though TTL is not
-          actually enforced in this simplified implementation).
+        - String get/set/delete with **enforced TTLs**, matching Redis
+          semantics rather than storing values forever.
         - Sorted-set operations (``zadd``, ``zremrangebyscore``,
           ``zcard``) used by the rate-limiting middleware.
         - Set operations (``sadd``, ``smembers``, ``srem``) used to index
           per-user cache keys.
-        - ``keys(pattern)`` and a no-op ``expire`` for cache-flush and
+        - ``keys(pattern)`` and ``expire`` for cache-flush and
           compatibility.
+
+    Expiry is evaluated lazily: a key is treated as absent the moment it is
+    read after its deadline, and dead entries are physically removed on the
+    next operation.  Redis expires keys eagerly in the background; the
+    observable behaviour (``get`` returns ``None``) is the same, and this
+    store is not shared between processes, so a periodic sweeper would only
+    add overhead.
 
     Note: This store is **not** shared across processes or workers.
     It is intended for development and testing only.
@@ -71,15 +83,39 @@ class InMemoryStore:
         self._sorted_sets: dict[str, dict[str, float]] = {}
         # Set simulation: key → {member}.
         self._sets: dict[str, set[str]] = {}
+        # Key → absolute ``time.monotonic()`` deadline.  A key absent from
+        # this mapping never expires.
+        self._expiry: dict[str, float] = {}
+
+    def _purge_expired(self) -> None:
+        """Drop every key whose TTL has elapsed."""
+        if not self._expiry:
+            return
+        now = time.monotonic()
+        for key in [key for key, deadline in self._expiry.items() if deadline <= now]:
+            self._data.pop(key, None)
+            self._sets.pop(key, None)
+            self._sorted_sets.pop(key, None)
+            self._expiry.pop(key, None)
 
     async def get(self, key: str) -> str | None:
-        """Retrieve a value by key, or ``None`` if the key does not exist."""
+        """Retrieve a value by key, or ``None`` if the key does not exist or expired."""
+        self._purge_expired()
         return self._data.get(key)
 
     async def set(self, key: str, value: str, ex: int | None = None) -> None:
-        """Store a value.  The ``ex`` (expiry) parameter is accepted for
-        API compatibility but not enforced in this in-memory implementation."""
+        """Store a value, expiring it after ``ex`` seconds when given.
+
+        A non-positive or missing ``ex`` clears any previous deadline, so
+        ``set(k, v)`` after ``set(k, v, ex=60)`` makes the key permanent —
+        the same behaviour Redis has when ``SET`` is used without ``EX``.
+        """
+        self._purge_expired()
         self._data[key] = value
+        if ex is not None and ex > 0:
+            self._expiry[key] = time.monotonic() + ex
+        else:
+            self._expiry.pop(key, None)
 
     async def delete(self, key: str) -> None:
         """Remove a key from the store (strings, sets and sorted sets).
@@ -90,13 +126,55 @@ class InMemoryStore:
         self._data.pop(key, None)
         self._sets.pop(key, None)
         self._sorted_sets.pop(key, None)
+        self._expiry.pop(key, None)
 
     async def keys(self, pattern: str) -> list[str]:
         """Return every string key matching a glob pattern."""
+        self._purge_expired()
         return [key for key in self._data if fnmatch.fnmatchcase(key, pattern)]
 
     async def expire(self, key: str, seconds: int) -> None:
-        """Compatibility no-op (real Redis enforces TTLs; memory does not)."""
+        """Set a TTL on an existing key (no-op when it does not exist).
+
+        Mirrors Redis, where ``EXPIRE`` on a missing key is a no-op rather
+        than an error.
+        """
+        self._purge_expired()
+        if key in self._data and seconds > 0:
+            self._expiry[key] = time.monotonic() + seconds
+        else:
+            self._expiry.pop(key, None)
+
+    async def incrby(self, key: str, amount: int = 1) -> int:
+        """Add ``amount`` to a counter, creating it at ``amount`` if missing.
+
+        Values are stored as strings so :meth:`get` keeps returning ``str``
+        while still always holding a parseable integer (mirroring Redis' own
+        string-based counters).
+        """
+        self._purge_expired()
+        try:
+            current = int(self._data.get(key, 0))
+        except (TypeError, ValueError):
+            current = 0
+        new_value = current + amount
+        self._data[key] = str(new_value)
+        return new_value
+
+    async def ttl(self, key: str) -> int:
+        """Return the remaining TTL of a key in seconds (Redis semantics).
+
+        ``-2`` when the key does not exist, ``-1`` when it has no expiry,
+        otherwise the whole seconds left.  Used to size a quota window so a
+        counter and its reset deadline stay in sync.
+        """
+        self._purge_expired()
+        if key not in self._data:
+            return -2
+        deadline = self._expiry.get(key)
+        if deadline is None:
+            return -1
+        return max(int(deadline - time.monotonic()), 0)
 
     async def zadd(self, key: str, mapping: dict[str, float]) -> None:
         """Add members to a sorted set, or update their scores if they exist."""
@@ -172,6 +250,7 @@ class RedisClient:
         self._memory_store._data.clear()
         self._memory_store._sorted_sets.clear()
         self._memory_store._sets.clear()
+        self._memory_store._expiry.clear()
 
     @classmethod
     def reset_all_memory_stores(cls) -> None:
@@ -223,24 +302,21 @@ class RedisClient:
     async def _run(self, method: str, *args: Any, **kwargs: Any) -> Any:
         """Execute an operation, retrying once against memory on a real-client failure.
 
-        ``ex`` is only meaningful for real Redis; the in-memory store uses
-        ``set(key, value)``.
+        ``ex`` is forwarded to both backends: real Redis turns it into a
+        ``SET ... EX``, and :class:`InMemoryStore` now enforces it too.  It
+        used to be dropped for the memory path, which meant that whenever
+        Redis was unreachable the cached conversations and responses never
+        expired at all.
         """
         client = await self.get_client()
         if self._using_memory():
-            impl = self._memory_store
-            if method == "set":
-                kwargs = {k: v for k, v in kwargs.items() if k != "ex"}
-            return await getattr(impl, method)(*args, **kwargs)
+            return await getattr(self._memory_store, method)(*args, **kwargs)
         try:
             return await getattr(client, method)(*args, **kwargs)
         except Exception:
             logger.exception("Redis operation failed - retrying with in-memory store (%s)", method)
             self._client = self._memory_store
-            impl = self._memory_store
-            if method == "set":
-                kwargs = {k: v for k, v in kwargs.items() if k != "ex"}
-            return await getattr(impl, method)(*args, **kwargs)
+            return await getattr(self._memory_store, method)(*args, **kwargs)
 
     async def get(self, key: str) -> str | None:
         """Retrieve a string value by key."""
@@ -257,14 +333,109 @@ class RedisClient:
     async def keys(self, pattern: str) -> list[str]:
         """Return every key matching a glob pattern (e.g. ``conversation:*:5``).
 
-        Intended for the low-frequency per-user cache-flush operation, not for
-        hot request paths.
+        .. warning::
+           Backed by Redis ``KEYS``, which is O(N) over the *whole*
+           keyspace and blocks the server while it runs.  Prefer
+           :meth:`scan_keys` — this method exists only where a glob over
+           string values is genuinely needed, and never on a hot path.
         """
         return await self._run("keys", pattern)
+
+    async def scan_keys(self, pattern: str, count: int = 500) -> list[str]:
+        """Return every key matching a glob pattern, using Redis ``SCAN``.
+
+        ``KEYS`` forces Redis to walk the entire keyspace in one blocking
+        call; on a busy instance that stalls *every* other client, so even a
+        per-user cache flush becomes a self-inflicted outage.  ``SCAN``
+        returns a cursor and a bounded batch of matches per round trip,
+        leaving the server responsive in between.
+
+        Args:
+            pattern: A glob pattern, e.g. ``ai_response:*:5:*``.
+            count: Hint for how many keys to examine per round trip.
+
+        Returns:
+            The matching keys.  As with any iteration over a live keyspace,
+            keys added or removed while scanning may or may not appear.
+        """
+        client = await self.get_client()
+        if self._using_memory():
+            return await self._memory_store.keys(pattern)
+
+        try:
+            found: list[str] = []
+            async for key in client.scan_iter(match=pattern, count=count):
+                found.append(key)
+            return found
+        except Exception:
+            logger.exception("Redis SCAN failed - falling back to an in-memory scan (%s)", pattern)
+            self._client = self._memory_store
+            return await self._memory_store.keys(pattern)
+
+    async def delete_many(self, keys: list[str]) -> int:
+        """Delete several keys in a single (pipelined) round trip.
+
+        Deleting keys one at a time costs one network round trip per key,
+        which is exactly the wrong shape for a cache flush: a user with a few
+        hundred cached responses would wait on a few hundred sequential
+        commands.  Batching them into one pipeline turns that into a single
+        exchange, and ``UNLINK`` (Redis 4+) reclaims the memory in a
+        background thread instead of blocking the event loop on ``DEL``.
+
+        Falls back to ``DEL`` on servers without ``UNLINK`` and to the
+        in-memory store on any connection failure.
+
+        Args:
+            keys: The keys to delete.  Duplicates are collapsed and the
+                list is chunked to stay well below argument limits.
+
+        Returns:
+            The number of keys actually removed.
+        """
+        unique = list(dict.fromkeys(keys))
+        if not unique:
+            return 0
+
+        client = await self.get_client()
+        if self._using_memory():
+            for key in unique:
+                await self._memory_store.delete(key)
+            return len(unique)
+
+        try:
+            return await self._piped_delete(client, unique)
+        except Exception:
+            logger.exception("Redis pipelined delete failed - retrying with in-memory store")
+            self._client = self._memory_store
+            for key in unique:
+                await self._memory_store.delete(key)
+            return len(unique)
+
+    @staticmethod
+    async def _piped_delete(client: Any, keys: list[str]) -> int:
+        """Run chunked ``UNLINK``/``DEL`` pipelines and return the total removed."""
+        total = 0
+        command = "unlink" if hasattr(client, "unlink") else "delete"
+        for start in range(0, len(keys), _DELETE_PIPELINE_CHUNK):
+            chunk = keys[start : start + _DELETE_PIPELINE_CHUNK]
+            pipe = client.pipeline(transaction=False)
+            for key in chunk:
+                getattr(pipe, command)(key)
+            results = await pipe.execute()
+            total += sum(int(result or 0) for result in results)
+        return total
 
     async def expire(self, key: str, seconds: int) -> None:
         """Set a TTL on a key (no-op for the in-memory fallback)."""
         await self._run("expire", key, seconds)
+
+    async def incrby(self, key: str, amount: int = 1) -> int:
+        """Add ``amount`` to a counter, creating it at ``amount`` if missing."""
+        return await self._run("incrby", key, amount)
+
+    async def ttl(self, key: str) -> int:
+        """Return the remaining TTL of a key in seconds (Redis semantics)."""
+        return await self._run("ttl", key)
 
     async def sadd(self, key: str, *values: str) -> None:
         """Add members to a set, creating it if needed."""

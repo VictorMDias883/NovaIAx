@@ -22,7 +22,7 @@ class StubObjectiveService:
     def __init__(self) -> None:
         self.calls = []
 
-    async def register(self, command, user_id: int) -> dict:
+    async def register(self, command, user_id: int, *, plan_tier=None) -> dict:
         self.calls.append((command, user_id))
         return {"id": 1, "title": command.title, "description": command.description, "due_date": command.due_date, "user_id": user_id}
 

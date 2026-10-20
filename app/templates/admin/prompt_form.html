@@ -1,12 +1,13 @@
 {% extends "admin/base.html" %}
-{% block title %}Edit System Prompt{% endblock %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Editar prompt do sistema{% endblock %}
 {% block content %}
-<h1>Edit system prompt</h1>
+<h1>Editar prompt do sistema</h1>
 
 <form method="post" action="/admin/system-prompts/{{ prompt.id }}">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  {{ ui.csrf_field(csrf_token) }}
   <div class="form-group">
-    <label for="tipo">Type</label>
+    <label for="tipo">Tipo</label>
     <input type="text" id="tipo" name="tipo" value="{{ prompt.tipo }}" required maxlength="100">
   </div>
   <div class="form-group">
@@ -14,8 +15,8 @@
     <textarea id="system_prompt" name="system_prompt" required maxlength="5000">{{ prompt.system_prompt }}</textarea>
   </div>
   <div class="actions">
-    <button type="submit" class="btn">Save</button>
-    <a class="btn" href="/admin/system-prompts">Cancel</a>
+    <button type="submit" class="btn">Salvar</button>
+    <a class="btn" href="/admin/system-prompts">Cancelar</a>
   </div>
 </form>
 {% endblock %}

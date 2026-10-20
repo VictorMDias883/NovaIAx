@@ -143,8 +143,14 @@ def test_empty_days_payload_falls_back_to_raw_roadmap() -> None:
     asyncio.run(_run(scenario))
 
 
-def test_duplicate_day_numbers_last_one_wins() -> None:
-    """Duplicate day numbers must not create duplicate day rows (last meta wins)."""
+def test_duplicate_day_numbers_keep_the_first_meta() -> None:
+    """A repeated day number is dropped, and the roadmap agrees with the records.
+
+    The AI sometimes emits the same day twice.  Keeping the first occurrence
+    (and discarding the duplicate) is what keeps the markdown roadmap and the
+    ``roadmap_days`` rows telling the same story: whichever entry won had to
+    be the one written to *both*.
+    """
 
     async def scenario(session) -> None:
         user = await _create_user(session)
@@ -154,13 +160,17 @@ def test_duplicate_day_numbers_last_one_wins() -> None:
         result = await _register(session, service, user.id)
 
         assert len(result["days"]) == 7
-        assert result["days"][0]["content"] == "b"
+        assert result["days"][0]["content"] == "a"
         assert result["days"][1]["content"] == "c"
         stored = (
             await session.execute(select(RoadmapDay).where(RoadmapDay.objective_id == result["id"]))
         ).scalars().all()
         assert len(stored) == 7
         assert len({d.day_number for d in stored}) == 7
+        # The roadmap must list day 1 exactly once, with the meta that was stored.
+        assert (result["roadmap"] or "").count("- Dia 1:") == 1
+        assert "- Dia 1: a" in (result["roadmap"] or "")
+        assert "- Dia 1: b" not in (result["roadmap"] or "")
 
     asyncio.run(_run(scenario))
 
@@ -179,11 +189,74 @@ def test_out_of_order_and_beyond_window_day_numbers() -> None:
         assert result["days"][1]["content"] == "b"
         assert result["days"][2]["content"] == "c"
         assert result["days"][3]["content"] is None
-        # NOTE: the roadmap markdown echoes every meta the AI returned
-        # (including out-of-window day 10), while the day records cannot
-        # represent it — an inconsistency to be aware of.
-        assert "- Dia 10: ignored" in (result["roadmap"] or "")
+        # A day number past the end of the 7-day window is dropped from the
+        # markdown roadmap too: the roadmap and the day records must describe
+        # the same window, otherwise the user reads a day the app cannot show.
+        assert "- Dia 10: ignored" not in (result["roadmap"] or "")
         assert all(day["content"] != "ignored" for day in result["days"])
+
+    asyncio.run(_run(scenario))
+
+
+def test_day_eight_is_rejected_because_the_window_is_seven_days() -> None:
+    """The window is 7 days, so ``Dia 8`` must be dropped from the roadmap.
+
+    The window used to be described to the model as ``start + 7`` while only
+    seven day rows were written, so the prompt itself invited an eighth day:
+    it landed in the markdown with no ``roadmap_days`` record behind it, and
+    the user saw a day the app could not open or track.
+    """
+
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        payload = '{"days": [{"day": 1, "meta": "a"}, {"day": 7, "meta": "g"}, {"day": 8, "meta": "hallucinated"}]}'
+        service = ObjectiveService(session, ai_client=DummyAIClient(payload))
+
+        result = await _register(session, service, user.id)
+
+        stored = (
+            await session.execute(select(RoadmapDay).where(RoadmapDay.objective_id == result["id"]))
+        ).scalars().all()
+        assert len(stored) == 7
+        assert max(d.day_number for d in stored) == 7
+        assert "hallucinated" not in (result["roadmap"] or "")
+        assert "- Dia 8" not in (result["roadmap"] or "")
+        assert "- Dia 7: g" in (result["roadmap"] or "")
+
+    asyncio.run(_run(scenario))
+
+
+def test_the_prompt_describes_the_seven_days_that_actually_exist() -> None:
+    """The model is told the exact same range the day records will cover."""
+
+    class _Recording(DummyAIClient):
+        def __init__(self) -> None:
+            super().__init__('{"days": []}')
+            self.user_messages: list[str] = []
+
+        async def create_chat_completion(self, system_prompt: str, user_message: str) -> str:
+            self.user_messages.append(user_message)
+            return self.roadmap
+
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        ai = _Recording()
+        service = ObjectiveService(session, ai_client=ai)
+
+        result = await _register(session, service, user.id)
+
+        assert len(ai.user_messages) == 1
+        user_message = ai.user_messages[0]
+        start = datetime.now(UTC).date()
+        # Seven inclusive days from today: today .. today + 6.
+        assert f"a {(start + timedelta(days=6)).isoformat()}" in user_message
+        assert f"a {(start + timedelta(days=7)).isoformat()}" not in user_message
+        # And the stored records agree with the range that was advertised.
+        stored = (
+            await session.execute(select(RoadmapDay).where(RoadmapDay.objective_id == result["id"]))
+        ).scalars().all()
+        assert len(stored) == 7
+        assert max(d.day_number for d in stored) == 7
 
     asyncio.run(_run(scenario))
 
@@ -423,7 +496,7 @@ def test_day_belonging_to_another_objective_returns_404() -> None:
             # day belongs to objective_b, but objective_a is targeted
             await day_service.set_day_status(objective_a.id, days_b[0].id, user.id, "USER", RoadmapDayStatus.COMPLETED)
         assert exc.value.status_code == 404
-        assert exc.value.detail == "Roadmap day not found"
+        assert exc.value.detail == "Dia do roteiro não encontrado."
 
     asyncio.run(_run(scenario))
 

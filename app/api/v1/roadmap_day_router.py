@@ -2,13 +2,14 @@
 API v1 roadmap-days endpoints.
 
 These endpoints allow the owner (or an administrator) of an objective
-to list its roadmap days and to mark each day as fulfilled, skipped, or
-pending again. The general agent uses this same data to report the
-user's progress.
+to list its roadmap days, mark each day as fulfilled, skipped, or
+pending again, and remove a day from the roadmap. The general agent
+uses this same data to report the user's progress.
 
 Endpoints:
     - GET   /objectives/{objective_id}/roadmap/days            — List days.
     - PATCH /objectives/{objective_id}/roadmap/days/{day_id}   — Update status.
+    - DELETE /objectives/{objective_id}/roadmap/days/{day_id}  — Remove day.
 """
 
 from fastapi import APIRouter, Depends, Path
@@ -21,6 +22,7 @@ from app.schemas.roadmap_day_schemas import (
     RoadmapDayStatusUpdate,
 )
 from app.services.roadmap_day_service import RoadmapDayService
+from app.utils.request import current_user_id
 
 router = APIRouter(prefix="/objectives", tags=["objectives"])
 
@@ -35,7 +37,7 @@ async def list_roadmap_days(
     service = RoadmapDayService(session)
     days = await service.list_days(
         objective_id=objective_id,
-        user_id=int(current_user["id"]),
+        user_id=current_user_id(current_user),
         role=str(current_user.get("role", "")),
     )
     return RoadmapDayListResponse(objective_id=objective_id, days=days)
@@ -54,7 +56,7 @@ async def update_roadmap_day_status(
     day = await service.set_day_status(
         objective_id=objective_id,
         day_id=day_id,
-        user_id=int(current_user["id"]),
+        user_id=current_user_id(current_user),
         role=str(current_user.get("role", "")),
         status=payload.status,
     )
@@ -66,4 +68,21 @@ async def update_roadmap_day_status(
         status=day.status,
         completed_at=day.completed_at,
         content=day.content,
+    )
+
+
+@router.delete("/{objective_id}/roadmap/days/{day_id}", status_code=204)
+async def delete_roadmap_day(
+    objective_id: int = Path(..., ge=1),
+    day_id: int = Path(..., ge=1),
+    current_user: dict = Depends(require_db_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    """Remove a single day from an objective's roadmap (owner or admin only)."""
+    service = RoadmapDayService(session)
+    await service.delete_day(
+        objective_id=objective_id,
+        day_id=day_id,
+        user_id=current_user_id(current_user),
+        role=str(current_user.get("role", "")),
     )

@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
+from app.api.deps import get_ai_router
 from app.db.session import SessionLocal
 from app.main import app
 from app.models.objective import Objective
@@ -24,7 +25,12 @@ class StubGroq:
 
 @pytest.fixture
 def client(monkeypatch) -> TestClient:
-    monkeypatch.setattr("app.api.v1.objective_router.GroqAIClient", StubGroq)
+    # Feed the fake to the objective endpoints through DI.  ``StubGroq`` is not
+    # an ``AIRouter``, so ``run_ai_request`` calls ``create_chat_completion``
+    # directly (legacy duck-typed path).
+    stub = StubGroq()
+    monkeypatch.setattr(app, "dependency_overrides", {**app.dependency_overrides})
+    app.dependency_overrides[get_ai_router] = lambda: stub
 
     with TestClient(app) as c:
         yield c
@@ -37,6 +43,7 @@ def _register_user(client: TestClient, email: str) -> dict:
             "full_name": "User",
             "email": email,
             "password": "Password123",
+            "birth_date": "1990-01-01",
         },
     )
     assert resp.status_code == 201, resp.text
@@ -154,6 +161,57 @@ def test_other_objectives_day_returns_404(client: TestClient) -> None:
         headers=token,
     )
     assert resp.status_code == 404
+
+
+def test_delete_day_removes_it_and_missing_days_are_404(client: TestClient) -> None:
+    owner = _register_user(client, _unique_email("owner4b"))
+    token = _auth(owner["access_token"])
+
+    created = client.post(
+        "/api/v1/objectives/register",
+        json={"title": "Meta A", "description": None, "due_date": _due_date()},
+        headers=token,
+    ).json()
+    objective_id = created["id"]
+    day_id = created["days"][2]["id"]
+
+    deleted = client.delete(f"/api/v1/objectives/{objective_id}/roadmap/days/{day_id}", headers=token)
+    assert deleted.status_code == 204
+    assert deleted.text == ""
+
+    days = client.get(f"/api/v1/objectives/{objective_id}/roadmap/days", headers=token)
+    assert days.status_code == 200
+    assert len(days.json()["days"]) == 6
+    assert all(d["id"] != day_id for d in days.json()["days"])
+
+    again = client.delete(f"/api/v1/objectives/{objective_id}/roadmap/days/{day_id}", headers=token)
+    assert again.status_code == 404
+
+
+def test_delete_day_non_owner_and_missing_objective(client: TestClient) -> None:
+    owner = _register_user(client, _unique_email("owner4c"))
+    other = _register_user(client, _unique_email("other4c"))
+    owner_token = _auth(owner["access_token"])
+    other_token = _auth(other["access_token"])
+
+    created = client.post(
+        "/api/v1/objectives/register",
+        json={"title": "Meta A", "description": None, "due_date": _due_date()},
+        headers=owner_token,
+    ).json()
+    day_id = created["days"][0]["id"]
+
+    denied = client.delete(
+        f"/api/v1/objectives/{created['id']}/roadmap/days/{day_id}",
+        headers=other_token,
+    )
+    assert denied.status_code == 403
+
+    missing = client.delete(
+        "/api/v1/objectives/999999/roadmap/days/999999",
+        headers=owner_token,
+    )
+    assert missing.status_code == 404
 
 
 def test_invalid_day_status_returns_422(client: TestClient) -> None:

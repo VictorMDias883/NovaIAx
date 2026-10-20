@@ -1,0 +1,105 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Código {{ stats.code.code }}{% endblock %}
+{% block content %}
+<h1>Código <code>{{ stats.code.code }}</code></h1>
+
+<div class="toolbar">
+  <a class="btn" href="/admin/promotions?tab=codes">Voltar</a>
+</div>
+
+<h2>Resumo</h2>
+<table>
+  <tbody>
+    <tr><th>Tipo</th><td>{{ stats.code.kind }}</td></tr>
+    <tr><th>Plano</th><td>{{ stats.code.plan or '—' }}</td></tr>
+    <tr><th>Dias</th><td>{{ stats.code.duration_days if stats.code.duration_days is not none else '—' }}</td></tr>
+    <tr><th>Mensagens de bônus</th><td>{{ stats.code.bonus_messages if stats.code.bonus_messages is not none else '—' }}</td></tr>
+    <tr><th>Resgates</th><td>{{ stats.redemptions }}</td></tr>
+    <tr><th>Restam</th><td>{{ stats.remaining if stats.remaining is not none else '∞' }}</td></tr>
+    <tr><th>Limite por usuário</th><td>{{ stats.code.per_user_limit }}</td></tr>
+    <tr><th>Ativo</th><td>{{ 'Sim' if stats.code.active else 'Não' }}</td></tr>
+    <tr><th>Válido até</th><td>{{ stats.code.valid_until or '—' }}</td></tr>
+    <tr><th>Observação</th><td>{{ stats.code.note or '—' }}</td></tr>
+  </tbody>
+</table>
+
+<h2>Editar</h2>
+<form method="post" action="/admin/promotions/codes/{{ stats.code.id }}">
+  {{ ui.csrf_field(csrf_token) }}
+  <div class="form-group">
+    <label for="kind">Tipo</label>
+    <select id="kind" name="kind">
+      {% for kind in kinds %}
+      <option value="{{ kind }}" {{ 'selected' if stats.code.kind == kind else '' }}>{{ kind }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="plan">Plano</label>
+    <select id="plan" name="plan">
+      <option value="">—</option>
+      {% for plan in plans %}
+      <option value="{{ plan }}" {{ 'selected' if stats.code.plan == plan else '' }}>{{ plan }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="duration_days">Duração (dias)</label>
+    <input type="number" id="duration_days" name="duration_days" min="1"
+           value="{{ stats.code.duration_days if stats.code.duration_days is not none else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="bonus_messages">Mensagens de bônus</label>
+    <input type="number" id="bonus_messages" name="bonus_messages" min="1"
+           value="{{ stats.code.bonus_messages if stats.code.bonus_messages is not none else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="max_redemptions">Limite total</label>
+    <input type="number" id="max_redemptions" name="max_redemptions" min="1" placeholder="ilimitado"
+           value="{{ stats.code.max_redemptions if stats.code.max_redemptions is not none else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="per_user_limit">Limite por usuário</label>
+    <input type="number" id="per_user_limit" name="per_user_limit" min="1" value="{{ stats.code.per_user_limit }}">
+  </div>
+  <div class="form-group">
+    <label for="valid_from">Válido a partir de</label>
+    <input type="datetime-local" id="valid_from" name="valid_from"
+           value="{{ stats.code.valid_from.strftime('%Y-%m-%dT%H:%M') if stats.code.valid_from else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="valid_until">Válido até</label>
+    <input type="datetime-local" id="valid_until" name="valid_until"
+           value="{{ stats.code.valid_until.strftime('%Y-%m-%dT%H:%M') if stats.code.valid_until else '' }}">
+  </div>
+  <div class="form-group">
+    <label for="note">Observação</label>
+    <input type="text" id="note" name="note" maxlength="255" value="{{ stats.code.note or '' }}">
+  </div>
+  <div class="form-group">
+    <label><input type="checkbox" name="active" value="true" {{ 'checked' if stats.code.active else '' }}> Ativo</label>
+  </div>
+  <button type="submit" class="btn">Salvar</button>
+</form>
+
+<h2>Resgates</h2>
+{% if redemptions %}
+<table>
+  <thead>
+    <tr><th>Usuário</th><th>Resgatado em</th><th>Concedido até</th></tr>
+  </thead>
+  <tbody>
+    {% for redemption in redemptions %}
+    <tr>
+      <td>{{ redemption.user_id }}</td>
+      <td>{{ redemption.redeemed_at }}</td>
+      <td>{{ redemption.granted_until or '—' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Nenhum resgate registrado.</p>
+{% endif %}
+{% endblock %}

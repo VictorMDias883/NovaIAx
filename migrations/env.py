@@ -41,10 +41,14 @@ from app import models  # noqa: E402,F401  (registers all model tables on ``Base
 from app.core.config import get_settings  # noqa: E402
 from app.db.session import Base  # noqa: E402
 from app.models import (  # noqa: E402,F401
+    agent_group,
     objective,
     roadmap_day,
+    sub_agent,
     system_prompt,
     user,
+    user_agent,
+    user_memory,
 )
 
 # Alembic Config object, which provides access to the values within the

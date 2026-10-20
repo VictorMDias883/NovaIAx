@@ -1,0 +1,49 @@
+{# Shared promo-code grant fields (used by create + bulk-generate forms). #}
+<div class="form-group">
+  <label>Tipo</label>
+  <select name="kind">
+    {% for kind in kinds %}
+    <option value="{{ kind }}">{{ kind }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="form-group">
+  <label>Plano concedido</label>
+  <select name="plan">
+    <option value="">—</option>
+    {% for plan in plans %}
+    <option value="{{ plan }}">{{ plan }}</option>
+    {% endfor %}
+  </select>
+</div>
+<div class="form-group">
+  <label>Duração (dias)</label>
+  <input type="number" name="duration_days" min="1">
+</div>
+<div class="form-group">
+  <label>Mensagens de bônus</label>
+  <input type="number" name="bonus_messages" min="1">
+</div>
+<div class="form-group">
+  <label>Limite total de resgates</label>
+  <input type="number" name="max_redemptions" min="1" placeholder="ilimitado">
+</div>
+<div class="form-group">
+  <label>Limite por usuário</label>
+  <input type="number" name="per_user_limit" min="1" value="1">
+</div>
+<div class="form-group">
+  <label>Válido a partir de</label>
+  <input type="datetime-local" name="valid_from">
+</div>
+<div class="form-group">
+  <label>Válido até</label>
+  <input type="datetime-local" name="valid_until">
+</div>
+<div class="form-group">
+  <label>Observação</label>
+  <input type="text" name="note" maxlength="255">
+</div>
+<div class="form-group">
+  <label><input type="checkbox" name="active" value="true" checked> Ativo</label>
+</div>

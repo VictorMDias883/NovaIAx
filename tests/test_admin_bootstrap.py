@@ -13,6 +13,7 @@ Verifies that on application startup:
 """
 
 import logging
+from collections.abc import AsyncGenerator
 
 import pytest
 from app.core.config import Settings
@@ -25,7 +26,7 @@ from sqlalchemy import delete, func, select
 
 
 @pytest.fixture
-async def clean_users() -> None:
+async def clean_users() -> AsyncGenerator[None, None]:
     """Remove every user so each test starts from an empty ``users`` table."""
     async with SessionLocal() as session:
         await session.execute(delete(User))
@@ -133,6 +134,28 @@ async def test_is_idempotent_when_admin_already_exists(
     generated_records = [r for r in caplog.records if r.__dict__.get("generated_password")]
     assert len(generated_records) == 1
     assert str(generated_records[0].__dict__["generated_password"]) == generated
+
+
+@pytest.mark.asyncio
+async def test_production_skips_default_admin_bootstrap(
+    monkeypatch: pytest.MonkeyPatch, clean_users: None
+) -> None:
+    """In production no admin is ever created or re-synced from env vars."""
+    import app.db.bootstrap as bootstrap_module
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "get_settings",
+        lambda: Settings(
+            environment="production",
+            admin_default_email="admin@admin.com",
+            admin_default_password="EnvPass!42",
+        ),
+    )
+
+    await ensure_default_admin()
+
+    assert await _all_users() == []
 
 
 @pytest.mark.asyncio
@@ -277,5 +300,7 @@ async def test_does_not_touch_other_admins(monkeypatch: pytest.MonkeyPatch, clea
     assert pwd_context.verify("KeepThisHash!42", other_after.password_hash)
 
     async with SessionLocal() as session:
-        result = await session.execute(select(func.count()).select_from(User).where(User.role == UserRole.ADMIN))
-        assert int(result.scalar_one()) == 2
+        count_result = await session.execute(
+            select(func.count()).select_from(User).where(User.role == UserRole.ADMIN)
+        )
+        assert int(count_result.scalar_one()) == 2

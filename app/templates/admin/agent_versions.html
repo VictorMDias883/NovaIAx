@@ -1,0 +1,49 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Versões · {{ label }}{% endblock %}
+{% block content %}
+<h1>Versões · {{ label|lower }}</h1>
+{{ ui.flashes(message, error) }}
+<p>
+  <a class="btn btn-sm" href="/admin/agents/{{ entity }}/{{ item.id }}/edit">Editar</a>
+  <a class="btn btn-sm" href="/admin/agents?tab={{ entity }}">Voltar</a>
+</p>
+
+{% if versions %}
+<table>
+  <thead>
+    <tr><th>Versão</th><th>Quando</th><th>Nota</th><th>Alterações</th><th>Ações</th></tr>
+  </thead>
+  <tbody>
+    {% for version in versions %}
+    <tr>
+      <td>v{{ version.version }}</td>
+      <td>{{ version.created_at }}</td>
+      <td>{{ version.note or '—' }}</td>
+      <td>
+        {% set diff = diffs[version.id] %}
+        {% if diff %}
+        <pre class="diff">{% for line in diff %}{{ line }}
+{% endfor %}</pre>
+        {% else %}
+        <em>Versão inicial</em>
+        {% endif %}
+      </td>
+      <td>
+        {% if not loop.first %}
+        <form method="post" action="/admin/agents/{{ entity }}/{{ item.id }}/rollback" class="inline"
+              data-confirm="Restaurar a versão v{{ version.version }}?">
+          {{ ui.csrf_field(csrf_token) }}
+          <input type="hidden" name="version_id" value="{{ version.id }}">
+          <button type="submit" class="btn btn-sm">Restaurar</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Nenhuma versão registrada.</p>
+{% endif %}
+{% endblock %}

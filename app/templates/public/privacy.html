@@ -1,0 +1,85 @@
+{% extends "public/base.html" %}
+{% block title %}Política de Privacidade · NovaIAx{% endblock %}
+{% block content %}
+  <h1>Política de Privacidade</h1>
+  <p class="muted">Última atualização: 13/10/2026 · Versão do documento: 1</p>
+
+  <div class="card">
+    <h2>1. Quais dados coletamos</h2>
+    <p>
+      Coletamos apenas os dados necessários para operar o assistente. Os dados
+      que guardamos, e que você pode baixar na íntegra em <code>GET /api/v1/me/export</code>,
+      são:
+    </p>
+    <ul>
+      <li><strong>Conta:</strong> nome, e-mail, data de nascimento (para verificação de idade mínima).</li>
+      <li><strong>Objetivos e roadmap</strong> criados por você e com a assistência de IA.</li>
+      <li><strong>Produtividade:</strong> tarefas, lembretes, notas, checklists, hábitos e sessões de foco.</li>
+      <li><strong>Saúde (medicamentos):</strong> os medicamentos que você registra (nome, dosagem, horários) e
+        seus registros de tomada. <em>Nós nunca alteramos doses nem sugerimos remédios.</em></li>
+      <li><strong>Finanças pessoais:</strong> despesas, receitas, contas a pagar e orçamentos. <em>Só registramos
+        seus números; não damos conselhos de investimento.</em></li>
+      <li><strong>Estudo:</strong> planos de estudo, baralhos, cartões (com o agendamento de revisão) e
+        histórico de revisões.</li>
+      <li><strong>Diário:</strong> viagens, turnos e cuidados registrados.</li>
+      <li><strong>Comunidade:</strong> relatos que você publica (com fotos de metadados removidos),
+        confirmações, denúncias, bloqueios e rascunhos de reclamação.</li>
+      <li><strong>Conversas</strong> com o assistente e o seu perfil personalizado (nome do agente, tom, idioma
+        e memórias aprendidas).</li>
+    </ul>
+    <p>
+      O suporte à violência doméstica (<code>/api/v1/community/support</code>) é somente leitura: nada que
+      você envia por lá é armazenado ou publicado.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>2. Por quanto tempo mantemos seus dados</h2>
+    <p>
+      Seu histórico de conversa é guardado por até
+      <strong>{{ conversation_retention_days }} dias</strong> após a última
+      interação. Registros de uso de IA são mantidos por até
+      <strong>{{ ai_logs_retention_days }} dias</strong>. Você pode exportar
+      ou excluir seus dados a qualquer momento.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>3. Terceiros que processam seus dados</h2>
+    <p>Para responder às suas mensagens, textos de conversas podem ser enviados aos seguintes provedores de IA:</p>
+    <table>
+      <thead>
+        <tr><th>Provedor</th><th>Endereço</th><th>Finalidade</th></tr>
+      </thead>
+      <tbody>
+        {% for processor in processors %}
+          <tr>
+            <td>{{ processor.name }}</td>
+            <td>{{ processor.base_url }}</td>
+            <td>{{ processor.purpose }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="3">Nenhum provedor de IA configurado.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p>
+      As compras são processadas pela <strong>Google Play</strong>; guardamos apenas um código irreversível do
+      comprovante, nunca o dado do pagamento.
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>4. Seus direitos</h2>
+    <ul>
+      <li><strong>Acesso e portabilidade:</strong> baixe toda a sua conta em <code>GET /api/v1/me/export</code>.</li>
+      <li><strong>Exclusão:</strong> exclua sua conta e todos os dados em <a href="/account-deletion">Exclusão de conta</a>.</li>
+      <li><strong>Consentimento:</strong> revise e revogue consentimentos pelos seus dados opcionais.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>5. Consentimentos que você pode gerenciar</h2>
+    <p>Além dos termos e desta política (aceitos na criação da conta), você pode conceder ou revogar, a qualquer momento, consentimentos opcionais para: microfone, contatos, localização e aprendizado automático.</p>
+  </div>
+{% endblock %}

@@ -9,10 +9,19 @@ correctly across multiple workers/processes.
 Two rate limits are supported:
     - ``rate_limit_default`` (60 req/min) — applied to all endpoints.
     - ``rate_limit_ai`` (10 req/min) — applied to endpoints that trigger an
-      AI provider call (``/ai/``, ``/agents/general``, ``/objectives/assistant``,
-      ``/objectives/register`` and ``/objectives/{id}/roadmap/renew``), which
-      are expensive to serve and count **against the provider's own**
-      requests/tokens-per-minute quota (not just ours).
+      AI provider call (``/ai/``, ``/agents/general``, ``/agents/device``,
+      ``/agents/chat``, ``/objectives/assistant``, ``/objectives/register`` and
+      ``/objectives/{id}/roadmap/renew``), which are expensive to serve and
+      count **against the provider's own** requests/tokens-per-minute quota
+      (not just ours).
+
+AI endpoints are bucketed **per authenticated user id** (``rate_limit_ai_user``,
+8 req/min) whenever the request carries a valid access token, and per client IP
+(``rate_limit_ai``) otherwise.  Keying the expensive bucket on the user means a
+single account cannot multiply its share of the provider quota by rotating
+client IPs, and users sharing one NAT/office address each get their own budget
+instead of competing for a single IP bucket.  Ordinary (non-AI) traffic stays
+purely per-IP.
 
 The sliding window is 60 seconds.  Timestamps outside this window
 are removed using ``zremrangebyscore`` before checking the count.
@@ -28,6 +37,8 @@ from app.cache.redis_client import RedisClient
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.network import get_client_ip
+from app.core.security import claim_int, decode_token
+from app.exceptions.api_errors import APIErrorCode
 
 logger = get_logger(__name__)
 
@@ -36,9 +47,12 @@ logger = get_logger(__name__)
 _AI_ENDPOINT_PATH_FRAGMENTS = (
     "/ai/",
     "/agents/general",
+    "/agents/device",
+    "/agents/chat",
     "/objectives/assistant",
     "/objectives/register",
     "/roadmap/renew",
+    "/me/weekly-plan",
 )
 
 
@@ -51,6 +65,31 @@ def is_ai_rate_limited(path: str) -> bool:
     cannot guarantee.
     """
     return any(fragment in path for fragment in _AI_ENDPOINT_PATH_FRAGMENTS)
+
+
+def extract_user_id(request: Request) -> int | None:
+    """Return the authenticated user id carried by the request, if any.
+
+    The rate-limit middleware runs *before* authentication, so it cannot read
+    ``request.state``.  It therefore inspects the ``Authorization: Bearer``
+    header itself and decodes the JWT to obtain the ``sub`` claim.  Only a
+    well-formed ``access`` token with a numeric ``sub`` yields an id; anything
+    else (missing header, refresh token, revoked/expired/invalid signature)
+    falls back to ``None`` so the caller buckets by IP instead.  A token that
+    fails to decode here will still be rejected later by the auth middleware,
+    so a 401 is never weakened by this best-effort lookup.
+    """
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split(" ", 1)[1]
+    try:
+        payload = decode_token(token)
+    except Exception:
+        return None
+    if payload.get("type") != "access":
+        return None
+    return claim_int(payload, "sub")
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -92,11 +131,30 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # bucketed per user instead of collapsing into one shared global
         # limit.
         client_ip = get_client_ip(request, self.settings)
-        key = f"rate_limit:{client_ip}"
 
-        # Select the appropriate limit: stricter for AI endpoints.
+        # Select the appropriate bucket: stricter for AI endpoints, and a
+        # SEPARATE counter.  Both buckets used one sorted set keyed only by IP,
+        # so ordinary traffic filled it and then the stricter AI limit was
+        # applied to that same total — a user who made ten normal requests in a
+        # minute was refused the assistant, and vice versa an AI call counted
+        # against the general allowance.  Each bucket now has its own window.
         path = request.url.path
-        limit = self.settings.rate_limit_ai if is_ai_rate_limited(path) else self.settings.rate_limit_default
+        is_ai = is_ai_rate_limited(path)
+        if is_ai:
+            # AI traffic is bucketed per authenticated user so one account
+            # cannot amplify its provider-quota share by rotating IPs; only
+            # unauthenticated AI requests (no/invalid access token) fall back
+            # to the per-IP bucket.
+            user_id = extract_user_id(request)
+            if user_id is not None:
+                limit = self.settings.rate_limit_ai_user
+                key = f"rate_limit:ai:user:{user_id}"
+            else:
+                limit = self.settings.rate_limit_ai
+                key = f"rate_limit:ai:{client_ip}"
+        else:
+            limit = self.settings.rate_limit_default
+            key = f"rate_limit:general:{client_ip}"
 
         # Prune timestamps that fall outside the 60-second sliding window
         # and count remaining members in the window. If Redis fails for any
@@ -115,7 +173,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # current window, reject the request with a 429.
         if window_size >= limit:
             logger.warning("Rate limit exceeded", extra={"ip": key, "path": request.url.path})
-            response = JSONResponse(status_code=429, content={"detail": "Too Many Requests"})
+            response = JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "Muitas requisições. Tente novamente em instantes.",
+                    "code": APIErrorCode.RATE_LIMIT_EXCEEDED.value,
+                },
+            )
             response.headers["X-RateLimit-Limit"] = str(limit)
             response.headers["X-RateLimit-Remaining"] = "0"
             response.headers["Retry-After"] = "60"

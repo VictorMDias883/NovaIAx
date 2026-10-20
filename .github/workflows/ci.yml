@@ -1,0 +1,85 @@
+# NovaIAx continuous integration.
+#
+# Runs on every push to `main` and on every pull request:
+#   - `lint`:   ruff check + mypy over the application code.
+#   - `test`:   full pytest suite (SQLite via `tests/` conftest).
+#   - `migrate`: applies `alembic upgrade head` against a throwaway
+#                PostgreSQL 16 instance so schema migrations are proven
+#                before any merge (same path prod runs in `entrypoint.sh`).
+#
+# Python 3.12 matches `requires-python` and the `[tool.mypy]` target.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & type-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Ruff check
+        run: ruff check .
+      - name: Mypy
+        run: mypy app
+
+  test:
+    name: Tests (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Run tests
+        run: pytest
+
+  migrate:
+    name: Alembic migrations (Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: novaiax
+          POSTGRES_PASSWORD: novaiax
+          POSTGRES_DB: novaiax
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U novaiax -d novaiax"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Apply migrations (alembic upgrade head)
+        env:
+          DATABASE_URL: postgresql+asyncpg://novaiax:novaiax@localhost:5432/novaiax
+        run: alembic upgrade head

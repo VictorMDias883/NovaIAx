@@ -7,11 +7,11 @@ This model represents an application user.  Each user can own multiple
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import Date, DateTime, String, func
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -81,6 +81,24 @@ class User(Base):
         nullable=False,
         server_default=func.now(),
     )
+    #: Date of birth, collected at registration to enforce the minimum-age
+    #: gate (see ``RegisterUserRequest.birth_date``).  ``None`` only for rows
+    #: created before the column existed.
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: Base32 TOTP secret for the admin console's optional second factor.
+    #: ``None`` until the admin enrols.  Only ever read/written by the admin
+    #: panel; the mobile API never exposes it.
+    admin_totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Set by an operator to suspend the account: every API call then answers
+    #: ``403 account_suspended`` and refresh tokens are rejected.  ``None``
+    #: means the account is active.  Only ever written by the admin panel.
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Last successful login, shown on the user detail page.  Updated on every
+    #: interactive login; never trusted for authorization.
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: Set when an operator bars the user from posting community reports.
+    #: ``None`` means the user may post.  Enforced by the community service.
+    community_banned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # One-to-many relationship: one user → many objectives.

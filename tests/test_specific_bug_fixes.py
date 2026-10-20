@@ -15,6 +15,7 @@ its reappearance:
 """
 
 import asyncio
+import re
 import uuid
 from collections.abc import Generator
 
@@ -27,7 +28,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, select, update
 
 _PASSWORD = "Password123"
-_COOKIE = "novaiax_admin_session"
+_COOKIE = "novaiax_admin_panel"
+_CSRF_RE = re.compile(r'name="csrf_token" value="([^"]+)"')
 
 
 @pytest.fixture
@@ -60,7 +62,7 @@ def _unique_email(prefix: str) -> str:
 def _register(client: TestClient, email: str) -> dict:
     resp = client.post(
         "/api/v1/auth/register",
-        json={"full_name": "Fix User", "email": email, "password": _PASSWORD},
+        json={"full_name": "Fix User", "email": email, "password": _PASSWORD, "birth_date": "1990-01-01"},
     )
     assert resp.status_code == 201, resp.text
     return resp.json()
@@ -176,11 +178,22 @@ def test_deleted_user_cookie_renders_login_not_redirect(client: TestClient) -> N
 
 
 def test_admin_cookie_shortcuts_to_dashboard(client: TestClient) -> None:
-    """A real ADMIN's access cookie still redirects /admin/login → /admin/."""
+    """An authenticated panel session still redirects /admin/login → /admin/."""
     admin = _register(client, _unique_email("admin2"))
     _set_role(admin["user"]["email"], UserRole.ADMIN)
 
-    client.cookies.set(_COOKIE, admin["access_token"])
+    login_page = client.get("/admin/login")
+    match = _CSRF_RE.search(login_page.text)
+    assert match is not None
+    token = match.group(1)
+    r = client.post(
+        "/admin/login",
+        data={"email": admin["user"]["email"], "password": _PASSWORD, "csrf_token": token},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert _COOKIE in client.cookies
+
     page = client.get("/admin/login", follow_redirects=False)
     assert page.status_code == 303
     assert page.headers["location"] == "/admin/"

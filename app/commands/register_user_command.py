@@ -8,6 +8,7 @@ explicit.
 """
 
 from dataclasses import dataclass
+from datetime import date
 
 
 @dataclass(frozen=True)
@@ -19,8 +20,12 @@ class RegisterUserCommand:
         email: The user's unique email address.
         password: The user's plaintext password (will be hashed by
             the service layer before storage).
+        birth_date: The user's date of birth, used by the age gate
+            (already validated by ``RegisterUserRequest``) and stored
+            on the account.
     """
 
     full_name: str
     email: str
     password: str
+    birth_date: date

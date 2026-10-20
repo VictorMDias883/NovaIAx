@@ -49,6 +49,15 @@ async def ensure_default_admin() -> None:
     duplicate default admins.
     """
     settings = get_settings()
+
+    # Production never mints or re-syncs an administrator from environment
+    # variables: an env-var default password (or its resync below) is a
+    # deployment-level backdoor.  Admins are provisioned explicitly in the
+    # database — see ``scripts/make_admin_sql.py``.
+    if settings.is_production:
+        logger.info("Skipping default-admin bootstrap in production; provision admins via SQL")
+        return
+
     configured_password = settings.admin_default_password
     generated_password: str | None = None
 

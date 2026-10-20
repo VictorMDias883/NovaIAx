@@ -7,8 +7,13 @@ class, the service layer remains free of ORM-specific code and can be
 unit-tested with a mock repository.
 """
 
-from sqlalchemy import func, select, text
+import contextlib
+from datetime import UTC, date, datetime
+from typing import Any
+
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.user import User, UserRole
 
@@ -52,6 +57,40 @@ class UserRepository:
             stmt = stmt.with_for_update()
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def search(
+        self, query: str | None = None, *, page: int = 1, limit: int = 25
+    ) -> tuple[list[User], int]:
+        """Return one page of users matching ``query`` by e-mail, name or id.
+
+        ``query`` is optional: when empty the whole table is listed in id
+        order.  A numeric query also matches the exact user id, which is
+        handy for support looking a user up by what they see in a screenshot.
+        """
+        clauses: list[Any] = []
+        clean = (query or "").strip()
+        if clean:
+            pattern = f"%{clean}%"
+            conditions: list[ColumnElement[bool]] = [User.email.ilike(pattern), User.full_name.ilike(pattern)]
+            with contextlib.suppress(ValueError):
+                conditions.append(User.id == int(clean))
+            clauses.append(or_(*conditions))
+
+        page = max(1, page)
+        limit = min(max(1, limit), 100)
+        stmt = (
+            select(User)
+            .where(*clauses)
+            .order_by(User.id)
+            .offset((page - 1) * limit)
+            .limit(limit)
+        )
+        rows = list((await self.session.execute(stmt)).scalars().all())
+        count_stmt = select(func.count()).select_from(User)
+        for clause in clauses:
+            count_stmt = count_stmt.where(clause)
+        total = int((await self.session.execute(count_stmt)).scalar_one())
+        return rows, total
 
     async def exists_admin(self, for_update: bool = False) -> bool:
         """Return whether any admin exists in the system."""
@@ -122,6 +161,7 @@ class UserRepository:
         email: str,
         password_hash: str,
         role: UserRole | None = None,
+        birth_date: date | None = None,
         commit: bool = True,
     ) -> User:
         """Create and persist a new user.
@@ -134,15 +174,31 @@ class UserRepository:
             email: The user's unique email address.
             password_hash: The PBKDF2 hash of the user's password.
             role: Optional role to assign; defaults to the database default.
+            birth_date: Optional ``datetime.date`` for the minimum-age gate;
+                stored on the account for future verification.
             commit: Whether to commit the transaction immediately.
 
         Returns:
             The newly created :class:`User` instance (with ``id``
             populated after ``refresh``).
         """
-        user = User(full_name=full_name, email=email, password_hash=password_hash)
+        # ``refresh_token_valid_after`` starts at "now" so no refresh token is
+        # invalidated out of the box, but a JWT ``iat`` is a whole second while
+        # ``now()`` carries microseconds.  Storing the sub-second part would
+        # reject the very first token the account receives (the one issued
+        # moments later in the same second), so the initial value is truncated
+        # to the second.  Later password changes write full-precision values,
+        # which is what invalidates previously issued tokens.
+        user = User(
+            full_name=full_name,
+            email=email,
+            password_hash=password_hash,
+            refresh_token_valid_after=datetime.fromtimestamp(int(datetime.now(UTC).timestamp()), tz=UTC),
+        )
         if role is not None:
             user.role = role
+        if birth_date is not None:
+            user.birth_date = birth_date
         self.session.add(user)
         if commit:
             await self.session.commit()

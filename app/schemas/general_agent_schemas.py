@@ -10,9 +10,18 @@ class GeneralAgentRequest(BaseModel):
 
 
 class GeneralAgentResponse(BaseModel):
-    """Response body returned by the general agent endpoint."""
+    """Response body returned by the general agent endpoint.
+
+    ``why`` (short reasons) and ``sources`` (the memory keys / group /
+    sub-agent slugs that influenced the reply) come from the model's
+    ``[personalization]`` marker and default to empty when the model did not
+    emit one.
+    """
 
     assistant_message: str
+    message_id: str
+    why: list[str] = []
+    sources: list[str] = []
 
 
 class GeneralAgentConversationClearResponse(BaseModel):

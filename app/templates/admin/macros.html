@@ -1,0 +1,20 @@
+{# Shared UI macros for the operator console. Import with:
+   {% import "admin/macros.html" as ui %} #}
+
+{% macro csrf_field(token) -%}
+<input type="hidden" name="csrf_token" value="{{ token }}">
+{%- endmacro %}
+
+{% macro flashes(message, error) -%}
+{% if message %}<div class="flash flash-ok" role="status">{{ message }}</div>{% endif %}
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+{%- endmacro %}
+
+{% macro pager(base, page, limit, total, label='itens', extra='') -%}
+{% set pages = ((total + limit - 1) // limit) or 1 %}
+<div class="pagination">
+  {% if page > 1 %}<a href="{{ base }}?page={{ page - 1 }}{{ extra }}">Anterior</a>{% endif %}
+  <span>Página {{ page }} de {{ pages }} ({{ total }} {{ label }})</span>
+  {% if page * limit < total %}<a href="{{ base }}?page={{ page + 1 }}{{ extra }}">Próxima</a>{% endif %}
+</div>
+{%- endmacro %}

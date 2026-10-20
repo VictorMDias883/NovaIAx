@@ -89,5 +89,11 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_system_prompts_tipo'), table_name='system_prompts')
     op.drop_index(op.f('ix_system_prompts_id'), table_name='system_prompts')
     op.drop_table('system_prompts')
+    # PostgreSQL keeps the native enum types after their columns/tables are
+    # dropped; without an explicit DROP TYPE a later ``upgrade head`` fails
+    # with "type ... already exists".  SQLite has no such types.
+    if op.get_bind().dialect.name == "postgresql":
+        for enum_name in ("roadmap_day_status", "user_role"):
+            op.execute(sa.text(f'DROP TYPE IF EXISTS "{enum_name}"'))
     # ### end Alembic commands ###
 

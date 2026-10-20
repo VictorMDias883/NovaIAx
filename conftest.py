@@ -36,19 +36,27 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
 # ``app.db.session`` builds its engine from ``DATABASE_URL`` at import
 # time, so it must be imported only *after* the env var is set above.
 import pytest  # noqa: E402
-from app.db.session import init_db as _create_all_tables  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_test_database() -> None:
-    """Run ``Base.metadata.create_all`` against the test database.
+    """Reset and build the test database once before the first test.
 
-    Uses the same SQLite engine configured via the ``DATABASE_URL``
-    environment variable set above.  This is idempotent — it only
-    creates tables that do not already exist.
+    Drops every table first so a stale ``test.db`` from a previous run
+    cannot leak rows into a fresh session (leftover rows would otherwise
+    be attributed to users whose auto-increment ids get reused).  Then
+    rebuilds the schema idempotently via ``Base.metadata.create_all``.
     """
     import asyncio
-    asyncio.run(_create_all_tables())
+
+    from app.db.session import Base, engine
+
+    async def _reset() -> None:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_reset())
 
 
 @pytest.fixture(autouse=True)

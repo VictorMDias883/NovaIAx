@@ -52,6 +52,8 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = [
     "E501",  # Comprimento de linha é coberto pelo formatador
     "SIM117", # Múltiplos ``with`` em uma linha não é problema
+    "B008",   # FastAPI/Starlette idiom: ``Depends()`` em argument-default de dependency
+    "UP042",  # ``class X(str, Enum)`` intencional para comparação/uso como string
 ]
 
 [tool.ruff.format]

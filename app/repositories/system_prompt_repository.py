@@ -17,16 +17,21 @@ class SystemPromptRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def list(self, offset: int = 0, limit: int = 100) -> list[SystemPrompt]:
-        # Deterministic ordering (id ASC) so pagination results are stable
-        # across calls — without an ORDER BY Postgres may return rows in any
-        # order, making offset/limit pagination non-deterministic.
-        stmt = select(SystemPrompt).order_by(SystemPrompt.id.asc()).offset(offset).limit(limit)
+    async def list(self, offset: int = 0, limit: int = 100, active_only: bool = False) -> list[SystemPrompt]:
+        # Deterministic ordering (sort_order then id) so pagination results are
+        # stable across calls — without an ORDER BY Postgres may return rows in
+        # any order, making offset/limit pagination non-deterministic.
+        stmt = select(SystemPrompt).order_by(SystemPrompt.sort_order.asc(), SystemPrompt.id.asc())
+        if active_only:
+            stmt = stmt.where(SystemPrompt.active.is_(True))
+        stmt = stmt.offset(offset).limit(limit)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def count(self) -> int:
+    async def count(self, active_only: bool = False) -> int:
         stmt = select(func.count()).select_from(SystemPrompt)
+        if active_only:
+            stmt = stmt.where(SystemPrompt.active.is_(True))
         result = await self.session.execute(stmt)
         return int(result.scalar_one())
 
@@ -41,6 +46,17 @@ class SystemPromptRepository:
         await self.session.commit()
         await self.session.refresh(prompt)
         return prompt
+
+    async def update_fields(self, prompt_id: int, **values: object) -> SystemPrompt | None:
+        """Patch arbitrary columns on a prompt (no-op for unknown ids)."""
+        await self.session.execute(
+            update(SystemPrompt)
+            .where(SystemPrompt.id == prompt_id)
+            .values(**values)
+            .execution_options(synchronize_session="fetch")
+        )
+        await self.session.commit()
+        return await self.get_by_id(prompt_id)
 
     async def update(self, prompt_id: int, tipo: str, system_prompt: str) -> SystemPrompt | None:
         stmt = (

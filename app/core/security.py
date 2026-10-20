@@ -18,6 +18,7 @@ This module provides:
    bypasses validation.
 """
 
+import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -27,6 +28,7 @@ from passlib.context import CryptContext
 
 from app.cache.redis_client import RedisClient
 from app.core.config import Settings, get_settings
+from app.utils.coercion import coerce_int as _coerce_int
 
 # ---------------------------------------------------------------------------
 # JWT helpers
@@ -114,6 +116,39 @@ def decode_token(token: str, settings: Settings | None = None) -> dict[str, Any]
     return jwt.decode(token, settings.secret_key, algorithms=[settings.jwt_algorithm])
 
 
+def coerce_int(value: object) -> int | None:
+    """Return ``value`` as an ``int``, or ``None`` if it is not a whole number.
+
+    Thin re-export of :func:`app.utils.coercion.coerce_int`, kept here so
+    token-related call sites have a single import.
+    """
+    return _coerce_int(value)
+
+
+def claim_int(payload: dict[str, Any], name: str) -> int | None:
+    """Read an integer JWT claim defensively, returning ``None`` if unusable.
+
+    JWT claims arrive as whatever JSON contained, so ``iat``, ``exp`` and
+    ``sub`` may be absent, ``null``, or a string.  Calling ``int()`` on them
+    unguarded turns a malformed token into an unhandled ``ValueError`` — a
+    500 that looks like a server fault and tells the caller nothing.  This
+    helper returns ``None`` instead, letting callers reject the token with a
+    clean 401.
+
+    Strings are accepted because some JWT producers serialize numeric claims
+    as quoted numbers; ``sub`` in particular is defined as a *string* by the
+    JWT spec, and this codebase issues it as one.
+
+    Args:
+        payload: The decoded token payload.
+        name: The claim to read.
+
+    Returns:
+        The claim as an ``int``, or ``None`` if it is missing or unusable.
+    """
+    return coerce_int(payload.get(name))
+
+
 # ---------------------------------------------------------------------------
 # Password hashing context
 # ---------------------------------------------------------------------------
@@ -127,6 +162,19 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 # ---------------------------------------------------------------------------
 # API-key service
 # ---------------------------------------------------------------------------
+
+
+def _matches_master_key(api_key: str, master_key: str) -> bool:
+    """Compare an API key against the master key in constant time.
+
+    ``==`` on two strings short-circuits at the first differing character, so
+    the time taken leaks how much of a guessed key was correct.  That is
+    academic for a random 32+ character key, but the master key is the one
+    credential that bypasses every check, so it is compared in constant time
+    as well.  :func:`secrets.compare_digest` needs both operands to be
+    ASCII-only ``str`` or ``bytes``, hence the encode.
+    """
+    return secrets.compare_digest(api_key.encode("utf-8"), master_key.encode("utf-8"))
 
 class ApiKeyService:
     """Validate and manage API keys backed by Redis.
@@ -165,7 +213,7 @@ class ApiKeyService:
         if not api_key or not api_key.strip():
             return False
         master_key = self.settings.master_api_key
-        if master_key and api_key == master_key:
+        if master_key and _matches_master_key(api_key, master_key):
             return True
         client = await self.redis_client.get_client()
         stored_hash = await client.get(f"api_key:{api_key[:8]}")

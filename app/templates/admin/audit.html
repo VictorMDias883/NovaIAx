@@ -1,0 +1,65 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Auditoria{% endblock %}
+{% block content %}
+<h1>Trilha de auditoria</h1>
+<p class="muted">Registro imutável das ações administrativas. Valores sensíveis e de conteúdo pessoal são redigidos.</p>
+
+<form method="get" action="/admin/audit" class="filters">
+  <div class="form-group">
+    <label for="action">Ação</label>
+    <select id="action" name="action">
+      <option value="">Todas</option>
+      {% for a in actions %}
+        <option value="{{ a }}" {{ 'selected' if a == action_filter else '' }}>{{ a }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="form-group">
+    <label for="entity">Entidade</label>
+    <input type="text" id="entity" name="entity" value="{{ entity_filter }}" maxlength="80">
+  </div>
+  <div class="form-group">
+    <label for="admin_id">ID do admin</label>
+    <input type="text" id="admin_id" name="admin_id" inputmode="numeric" value="{{ admin_id_filter or '' }}">
+  </div>
+  <button type="submit" class="btn">Filtrar</button>
+</form>
+
+{% if entries %}
+<table>
+  <thead>
+    <tr>
+      <th>Quando</th>
+      <th>Admin</th>
+      <th>Ação</th>
+      <th>Entidade</th>
+      <th>IP</th>
+      <th>Alteração</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for entry in entries %}
+    <tr>
+      <td class="muted">{{ entry.created_at.strftime('%Y-%m-%d %H:%M:%S') if entry.created_at else '' }}</td>
+      <td>{{ entry.admin_email or '—' }} <span class="muted">#{{ entry.admin_id or '—' }}</span></td>
+      <td>{{ entry.action }}</td>
+      <td>{{ entry.entity or '—' }}{% if entry.entity_id %} #{{ entry.entity_id }}{% endif %}</td>
+      <td class="muted">{{ entry.ip_address or '—' }}</td>
+      <td>
+        <details>
+          <summary class="muted">ver</summary>
+          <pre class="audit-json">antes: {{ entry.before | tojson }}</pre>
+          <pre class="audit-json">depois: {{ entry.after | tojson }}</pre>
+        </details>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{{ ui.pager('/admin/audit', page, limit, total, 'registros') }}
+{% else %}
+<p>Nenhum registro encontrado.</p>
+{% endif %}
+{% endblock %}

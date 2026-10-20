@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 from app.cache.redis_client import RedisClient
+from app.core.config import get_settings
 
 #: Maximum number of messages kept per conversation.  Older messages are
 #: trimmed to avoid unbounded growth of the cached history.
@@ -57,16 +58,21 @@ class ConversationCache:
         self.client = client or RedisClient()
 
     @staticmethod
-    def _key(agent: str, user_id: int) -> str:
-        """Return the cache key for a given agent and user."""
+    def _key(agent: str, user_id: int | str) -> str:
+        """Return the cache key for a given agent and user.
+
+        ``user_id`` is usually a database id, but API-key identities use the
+        ``"api-key"`` sentinel (see :func:`app.api.deps.require_db_user`), so
+        any hashable identifier is accepted and simply stringified.
+        """
         return f"{KEY_PREFIX}{agent}:{user_id}"
 
     @staticmethod
-    def key_pattern(user_id: int) -> str:
+    def key_pattern(user_id: int | str) -> str:
         """Return a glob matching every conversation key belonging to a user."""
         return f"{KEY_PREFIX}*:{user_id}"
 
-    async def get_messages(self, agent: str, user_id: int) -> list[dict[str, str]]:
+    async def get_messages(self, agent: str, user_id: int | str) -> list[dict[str, str]]:
         """Return the stored history for a conversation, or ``[]`` if empty.
 
         Malformed entries are filtered out so the AI never receives
@@ -90,7 +96,7 @@ class ConversationCache:
             and item["content"].strip()
         ]
 
-    async def save(self, agent: str, user_id: int, messages: list[dict[str, str]]) -> None:
+    async def save(self, agent: str, user_id: int | str, messages: list[dict[str, str]]) -> None:
         """Persist the conversation history, trimming the oldest messages.
 
         Trimming drops complete oldest turns (two messages at a time to keep
@@ -98,14 +104,26 @@ class ConversationCache:
         the message cap (:data:`MAX_HISTORY_MESSAGES`) and the token budget
         (:data:`MAX_HISTORY_TOKENS`).  The latest turn is always preserved, so
         the assistant never loses the most recent exchange.
+
+        The key is written with a rolling expiry of
+        ``conversation_history_ttl_seconds`` (default 30 days): each new turn
+        refreshes the timer, so an *idle* conversation — an "AI log" whose
+        user has stopped talking — is auto-purged, which is the data-retention
+        guarantee promised on the public privacy page.  A value of ``0`` or
+        less disables the TTL (keys live until a user flush or deletion).
         """
         trimmed = list(messages)
         while len(trimmed) > 2 and (
             len(trimmed) > MAX_HISTORY_MESSAGES or _estimate_tokens(trimmed) > MAX_HISTORY_TOKENS
         ):
             trimmed = trimmed[2:]
-        await self.client.set(self._key(agent, user_id), json.dumps(trimmed, ensure_ascii=False))
+        ttl = get_settings().conversation_history_ttl_seconds
+        await self.client.set(
+            self._key(agent, user_id),
+            json.dumps(trimmed, ensure_ascii=False),
+            ex=ttl if ttl and ttl > 0 else None,
+        )
 
-    async def clear(self, agent: str, user_id: int) -> None:
+    async def clear(self, agent: str, user_id: int | str) -> None:
         """Delete the entire conversation history for an agent and user."""
         await self.client.delete(self._key(agent, user_id))

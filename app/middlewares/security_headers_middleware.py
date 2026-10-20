@@ -33,11 +33,18 @@ web vulnerabilities:
     - ``Cross-Origin-Resource-Policy: same-origin``
         Restricts resources to same-origin requests only.
 
-    - ``Content-Security-Policy: default-src 'self'``
-        Reduces the risk of XSS and data injection attacks.
+    - ``Content-Security-Policy`` (strict, per-response nonce)
+        Locks the page down to same-origin assets and scripts carrying the
+        per-response nonce, so an injected inline script cannot run.
+
+The nonce is generated here, stored on ``request.state.csp_nonce`` and
+exposed to the admin templates; the matching ``script-src 'nonce-...'``
+directive is written into the same response's header.
 
 This middleware is applied to all responses, including error responses.
 """
+
+import secrets
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -58,6 +65,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         Returns:
             The :class:`Response` with security headers added.
         """
+        # A fresh nonce per response; the templates read it back to stamp
+        # their <script> tags, so an injected inline script has no valid nonce.
+        nonce = secrets.token_urlsafe(16)
+        request.state.csp_nonce = nonce
+
         # Forward the request to the downstream handler.
         response: Response = await call_next(request)
 
@@ -69,5 +81,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=()"
         response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
-        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            f"script-src 'self' 'nonce-{nonce}'; "
+            "style-src 'self'; "
+            "img-src 'self' data:; "
+            "font-src 'self'; "
+            "connect-src 'self'; "
+            "object-src 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none'"
+        )
         return response

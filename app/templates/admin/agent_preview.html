@@ -1,0 +1,20 @@
+{% extends "admin/base.html" %}
+{% block title %}Teste de agente{% endblock %}
+{% block content %}
+<h1>Teste de agente</h1>
+
+{% if error %}<div class="flash flash-error" role="alert">{{ error }}</div>{% endif %}
+
+{% if result %}
+<div class="card">
+  <p><strong>Provedor:</strong> {{ result.provider }} · <strong>Modelo:</strong> {{ result.model or '—' }}</p>
+  <h2>Resposta</h2>
+  <pre class="preview-reply">{{ result.reply }}</pre>
+</div>
+{% endif %}
+
+<h2>Prompt testado</h2>
+<textarea rows="8" readonly>{{ draft_prompt }}</textarea>
+
+<p><a class="btn" href="/admin/agents">Voltar</a></p>
+{% endblock %}

@@ -154,8 +154,10 @@ on the free plan migrations run **inside the container**:
 - `entrypoint.sh` runs `alembic upgrade head` (idempotent no-op when the schema
   is current), then `exec uvicorn app.main:app --host 0.0.0.0 --port 8000`.
 - With `set -e`, a **failed migration stops the script**: the container exits
-  non-zero, uvicorn never starts, and Render fails the deploy (old version keeps
-  serving via zero-downtime).
+  non-zero, uvicorn never starts, and Render marks the deploy failed.  (On the
+  `free` plan Render restarts the instance in place, so a failed deploy leaves
+  the service down until the next successful deploy; paid plans get
+  zero-downtime rollouts that keep the old version serving.)
 
 **Tradeoff vs. a pre-deploy hook:** a real `preDeployCommand` runs on a separate
 instance *before* the deploy, cleanly aborting the deploy on failure.  The
@@ -265,19 +267,110 @@ Implications:
 
 ## 8. First real users / smoke test
 
+> **Production has no auto-admin.**  The "first registered user becomes admin"
+> behavior only applies outside production.  On a production deploy, create the
+> operator through the panel provisioning SQL (§ 9) before using `/admin`.
+
 ```bash
 BASE=https://novaiax-gateway.onrender.com
 
-# Register the first user (becomes admin automatically):
+# Register the first user (becomes admin automatically outside production):
 curl -s -X POST "$BASE/api/v1/auth/register" \
   -H "Content-Type: application/json" \
-  -d '{"full_name":"Admin","email":"admin@example.com","password":"S3cure!Passw0rd"}'
+  -d '{"full_name":"Admin","email":"admin@example.com","password":"S3cure!Passw0rd","birth_date":"1990-01-01"}'
 
 # Login and grab tokens:
 curl -s -X POST "$BASE/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@example.com","password":"S3cure!Passw0rd"}'
 ```
+
+---
+
+## 9. Admin console (`/admin`)
+
+The operator panel at `/admin` is **separate** from the mobile API auth: it has
+its own login, its own opaque session cookie (only a SHA-256 hash is stored),
+idle (default 60 min) and absolute (default 8 h) timeouts, CSRF on every
+mutation, an append-only audit log, and an optional TOTP second factor.
+
+### Provisioning admins (production)
+
+In production `ensure_default_admin` is a **no-op** — no admin is created or
+re-synced from env vars, and there is **no admin registration endpoint**.
+Admins are provisioned directly in the database.  Generate the SQL locally (the
+script only prints, it never connects):
+
+```bash
+python scripts/make_admin_sql.py --name "Ops" --email ops@example.com
+# prompt: ADMIN_PASSWORD env or interactive getpass
+```
+
+Paste the emitted `UPDATE`/`INSERT … ON CONFLICT` into the Supabase SQL editor
+(or `psql`).  Every non-admin (or unknown e-mail) attempting the panel login
+gets a generic `401`, so an attacker cannot enumerate admins.
+
+### Relevant environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ADMIN_PANEL_ENABLED` | `true` | When `false` every `/admin` route returns `404`. |
+| `ADMIN_PANEL_COOKIE_NAME` | `novaiax_admin_panel` | Panel session cookie name (path `/admin`). |
+| `ADMIN_REQUIRE_TOTP` | `false` | Force TOTP; admins without a secret are redirected to enroll. |
+| `ADMIN_TOTP_ISSUER` | `NovaIAx Admin` | Label shown in the authenticator app. |
+| `ADMIN_ALLOWED_IPS` | *(unset)* | Comma-separated allowlist; outside it `/admin` returns `403`. Behind a proxy set `TRUST_PROXY_HEADERS=true`. |
+| `ADMIN_SESSION_IDLE_MINUTES` | `60` | Inactivity timeout. |
+| `ADMIN_SESSION_ABSOLUTE_HOURS` | `8` | Hard session lifetime. |
+
+The panel serves **aggregate counters only** (users, prompts, open reports,
+messages today, active subscriptions by plan) — never chats, notes, health,
+finance, study or logbook content.
+
+### Agent console (`/admin/agents`)
+
+The **Agentes** tab manages the prompt catalog without code: audience groups,
+sub-agents and custom-prompt agents.  Each change is audited, and every prompt
+save appends an immutable row to `prompt_versions` (viewable, diffable and
+rollback-able from the “Versões” screen).  The public catalog endpoints
+(`/api/v1/agent-groups`, `/api/v1/sub-agents`, `/api/v1/system-prompts/`) list
+**only active** entries, in `sort_order`, and carry `ETag`/`Cache-Control` so
+clients revalidate cheaply; activation changes invalidate the relevant AI
+caches automatically.
+
+Every production AI request gets the platform-owned **safety preamble**
+prepended by the router, after the admin prompt is loaded — an admin prompt
+cannot remove or override it.  A deny-list linter blocks saves that try
+(`prompt_safety`), and the “Testar agente” sandbox runs an unsaved draft
+through the router (quota-exempt, per-admin rate-limited).
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AGENT_PROMPT_MAX_CHARS` | `5000` | Hard cap for any admin-authored prompt fragment. |
+| `AGENT_PREVIEW_RATE_LIMIT` | `10` | “Testar agente” attempts per admin per window (`0` disables). |
+| `AGENT_PREVIEW_RATE_WINDOW_SECONDS` | `60` | Sandbox rate-limit window length. |
+
+---
+
+## 10. Supabase notes (Postgres / Data API)
+
+If the database is a Supabase project (instead of Render-managed Postgres):
+
+- **Connection for Alembic**: use the **direct** connection or the **session
+  pooler** (port `5432`).  The **transaction pooler** (`6543`, PgBouncer) cannot
+  hold the sessions/prepared statements Alembic needs.  Run `alembic upgrade
+  head` against the direct/session URL.
+- **Connection for the app**: the async engine tolerates the transaction pooler
+  (`6543`) — `app/db/session.py` sets `statement_cache_size=0` for it to avoid
+  the `prepared statement … does not exist` PgBouncer error.  The session pooler
+  also works if you prefer it.
+- **Row Level Security**: the admin-console migration enables RLS (no policies)
+  on **every** table in the `public` schema.  The backend connects as the table
+  **owner**, which bypasses RLS, so the API keeps working; the Supabase
+  **Data API (PostgREST) anon/authenticated roles** see **no rows**.  This is
+  intentional — the app is the only data path.  If you ever expose tables via
+  the Data API, add explicit policies first.
+- Do **not** enable `FORCE ROW LEVEL SECURITY` unless you also add policies for
+  the owner — that would lock the backend out of its own tables.
 
 ---
 

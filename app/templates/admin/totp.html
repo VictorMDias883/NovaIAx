@@ -1,0 +1,42 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Segurança{% endblock %}
+{% block content %}
+<h1>Verificação em duas etapas (2FA)</h1>
+{{ ui.flashes(request.query_params.get('message'), error) }}
+
+{% if admin.totp_enrolled %}
+  <div class="flash flash-ok">A verificação em duas etapas está <strong>ativada</strong> para esta conta.</div>
+  <p class="muted">Para reconfigurar, desative e ative novamente. É preciso informar um código válido.</p>
+  {% if not settings.admin_require_totp %}
+  <form method="post" action="/admin/security/totp/disable" data-confirm="Desativar a verificação em duas etapas?">
+    {{ ui.csrf_field(csrf_token) }}
+    <button type="submit" class="btn btn-danger">Desativar 2FA</button>
+  </form>
+  {% else %}
+  <p class="muted">A verificação em duas etapas é obrigatória nesta instalação e não pode ser desativada.</p>
+  {% endif %}
+{% else %}
+  <div class="card">
+    <p>1. Adicione a conta ao seu aplicativo autenticador usando a chave abaixo.</p>
+    <div class="form-group">
+      <label>Chave (base32)</label>
+      <input type="text" class="mono" value="{{ secret }}" readonly>
+    </div>
+    <div class="form-group">
+      <label>URI para o autenticador</label>
+      <input type="text" class="mono" value="{{ otpauth_uri }}" readonly>
+    </div>
+  </div>
+  <form method="post" action="/admin/security/totp">
+    {{ ui.csrf_field(csrf_token) }}
+    <input type="hidden" name="secret" value="{{ secret }}">
+    <div class="form-group">
+      <label for="code">2. Informe o código de 6 dígitos gerado</label>
+      <input type="text" id="code" name="code" inputmode="numeric" autocomplete="one-time-code"
+             pattern="[0-9 ]*" maxlength="7" required>
+    </div>
+    <button type="submit" class="btn">Ativar 2FA</button>
+  </form>
+{% endif %}
+{% endblock %}
