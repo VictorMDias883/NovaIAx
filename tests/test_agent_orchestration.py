@@ -49,6 +49,7 @@ from app.models.agent_action import (
     DEVICE_ACTION_TYPES,
     DEVICE_REQUIRE_CONFIRMATION,
     PREPARES_ONLY_TYPES,
+    SERVER_RESOLVED_ACTION_TYPES,
     AgentAction,
     AgentActionStatus,
     AgentActionType,
@@ -220,7 +221,7 @@ ALL_ACTIONS: list[tuple[dict[str, Any], bool, bool, bool]] = [
     ({"type": "TOGGLE_FLASHLIGHT", "params": {"on": True}}, False, False, True),
     ({"type": "OPEN_APP", "params": {"app_name": "Spotify"}}, False, False, True),
     ({"type": "OPEN_SETTINGS_PANEL", "params": {"panel": "bluetooth"}}, False, False, True),
-    ({"type": "DIAL", "params": {}}, True, True, True),
+    ({"type": "DIAL", "params": {"contact_name": "Ana", "phone": "+5511999999999"}}, True, True, True),
     ({"type": "COMPOSE_MESSAGE", "params": {"app": "whatsapp", "contact_name": "Ana", "text": "oi"}}, True, True, True),
     ({"type": "SET_ALARM", "params": {"hour": 7, "minute": 5}}, False, False, True),
     ({"type": "SET_TIMER", "params": {"seconds": 600, "label": "pão"}}, False, False, True),
@@ -236,19 +237,25 @@ ALL_ACTIONS: list[tuple[dict[str, Any], bool, bool, bool]] = [
     ({"type": "NAVIGATE", "params": {"destination": "Av. Paulista, 1000"}}, False, False, True),
     ({"type": "WEB_SEARCH", "params": {"query": "prefeitura sp"}}, False, False, True),
     ({"type": "PLAY_MUSIC", "params": {"query": "mpb dos anos 90"}}, False, False, True),
-    ({"type": "WHAT_IS_PENDING_TODAY", "params": {}}, False, False, True),
 ]
 
 
 def test_the_specified_whitelist_is_covered_exactly() -> None:
     """Guard against the tests drifting away from the 24 declared types."""
+    # WHAT_IS_PENDING_TODAY is still a declared type, but it is answered by
+    # the server at proposal time, so it is never a proposed action row.
     declared = {action["type"] for action, _, _, _ in ALL_ACTIONS}
-    assert declared == {t.value for t in AgentActionType}
-    assert len(ALL_ACTIONS) == len(AgentActionType) == 24
+    assert declared == {t.value for t in AgentActionType} - {"WHAT_IS_PENDING_TODAY"}
+    assert len(ALL_ACTIONS) == 23
+    assert len(AgentActionType) == 24
     assert set(AgentActionType) == BACKEND_ACTION_TYPES | DEVICE_ACTION_TYPES
     assert BACKEND_ACTION_TYPES.isdisjoint(DEVICE_ACTION_TYPES)
-    assert len(BACKEND_ACTION_TYPES) == 10
-    assert len(DEVICE_ACTION_TYPES) == 14
+    assert len(BACKEND_ACTION_TYPES) == 11
+    assert len(DEVICE_ACTION_TYPES) == 13
+    # Server-resolved reads are backend actions that need no confirmation.
+    assert SERVER_RESOLVED_ACTION_TYPES <= BACKEND_ACTION_TYPES
+    assert SERVER_RESOLVED_ACTION_TYPES.isdisjoint(DEVICE_ACTION_TYPES)
+    assert len(SERVER_RESOLVED_ACTION_TYPES) == 1
     assert set(DEVICE_REQUIRE_CONFIRMATION) == DEVICE_ACTION_TYPES
     assert frozenset(
         {AgentActionType.DIAL, AgentActionType.COMPOSE_MESSAGE}
@@ -301,7 +308,8 @@ REJECTED: list[tuple[Any, str]] = [
     ({"type": "TOGGLE_FLASHLIGHT", "params": {"on": "true"}}, "boolean as string"),
     ({"type": "OPEN_APP", "params": {"app_name": ""}}, "empty app_name"),
     ({"type": "OPEN_SETTINGS_PANEL", "params": {"panel": "airplane_mode"}}, "bad panel"),
-    ({"type": "DIAL", "params": {"contact_name": "Ana"}}, "DIAL takes no params"),
+    ({"type": "DIAL", "params": {}}, "DIAL without a target"),
+    ({"type": "DIAL", "params": {"phone": "ligue agora"}}, "phone without digits"),
     (
         {"type": "COMPOSE_MESSAGE", "params": {"app": "telegram", "contact_name": "A", "text": "x"}},
         "bad app",
@@ -358,7 +366,7 @@ def test_non_whitelisted_action_is_dropped(action: Any, why: str) -> None:
     ("action", "claimed"),
     [
         ({"type": "CREATE_TASK", "params": {"title": "x"}}, {"requires_confirmation": False}),
-        ({"type": "DIAL", "params": {}}, {"requires_confirmation": False, "prepares_only": False}),
+        ({"type": "DIAL", "params": {"phone": "+5511999999999"}}, {"requires_confirmation": False, "prepares_only": False}),
         ({"type": "SET_ALARM", "params": {"hour": 7, "minute": 0}}, {"requires_confirmation": True}),
         (
             {"type": "MARK_DAY_COMPLETED", "params": {"objective_id": 1, "day_id": 1}},
@@ -393,8 +401,35 @@ def _declared_types(items: list[tuple[dict[str, Any], bool, bool, bool]]) -> set
 
 def test_backend_and_device_split_matches_the_tables() -> None:
     declared = _declared_types(ALL_ACTIONS)
-    assert {t for t in declared if t in BACKEND_ACTION_TYPES} == BACKEND_ACTION_TYPES
+    assert {t for t in declared if t in BACKEND_ACTION_TYPES} == (
+        BACKEND_ACTION_TYPES - SERVER_RESOLVED_ACTION_TYPES
+    )
     assert {t for t in declared if t in DEVICE_ACTION_TYPES} == DEVICE_ACTION_TYPES
+
+
+def test_pending_today_is_answered_in_the_reply_without_a_proposal() -> None:
+    """The server renders the facts; nothing is proposed, so nothing confirms."""
+
+    async def scenario(session) -> None:
+        user = await _add_user(session)
+        objective = await _add_objective(session, user.id, title="Aprender inglês")
+        await _add_day(session, objective.id, content="Revisar vocabulário")
+
+        result, _ = await _run_chat(
+            session,
+            _model_json(
+                "Você tem 3 dias pendentes! Totalmente errado.",
+                [{"type": "WHAT_IS_PENDING_TODAY", "params": {}}],
+            ),
+            user.id,
+        )
+
+        assert result["proposed_actions"] == []
+        # The model's prose is replaced by the rows that actually exist.
+        assert "3 dias" not in result["reply"]
+        assert "Revisar vocabulário" in result["reply"]
+
+    asyncio.run(_with_session(scenario))
 
 
 # ---------------------------------------------------------------------------

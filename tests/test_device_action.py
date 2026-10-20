@@ -167,7 +167,7 @@ ALL_ACTIONS: list[tuple[dict[str, Any], bool, bool]] = [
     ({"type": "TOGGLE_FLASHLIGHT", "params": {"on": True}}, False, False),
     ({"type": "OPEN_APP", "params": {"app_name": "Spotify"}}, False, False),
     ({"type": "OPEN_SETTINGS_PANEL", "params": {"panel": "bluetooth"}}, False, False),
-    ({"type": "DIAL", "params": {}}, True, True),
+    ({"type": "DIAL", "params": {"contact_name": "Ana", "phone": "+5511999999999"}}, True, True),
     ({"type": "COMPOSE_MESSAGE", "params": {"app": "whatsapp", "contact_name": "Ana", "text": "oi"}}, True, True),
     ({"type": "SET_ALARM", "params": {"hour": 7, "minute": 5}}, False, False),
     ({"type": "SET_TIMER", "params": {"seconds": 600, "label": "pão"}}, False, False),
@@ -183,14 +183,16 @@ ALL_ACTIONS: list[tuple[dict[str, Any], bool, bool]] = [
     ({"type": "WEB_SEARCH", "params": {"query": "prefeitura sp"}}, False, False),
     ({"type": "PLAY_MUSIC", "params": {"query": "mpb dos anos 90"}}, False, False),
     ({"type": "MARK_DAY_COMPLETED", "params": {"objective_id": 1, "day_id": 1}}, True, False),
-    ({"type": "WHAT_IS_PENDING_TODAY", "params": {}}, False, False),
 ]
 
 
 def test_the_specified_whitelist_is_covered_exactly() -> None:
     """Guard against the tests drifting away from the 15 declared types."""
-    assert {action["type"] for action, _, _ in ALL_ACTIONS} == {t.value for t in DeviceActionType}
-    assert len(ALL_ACTIONS) == 15
+    # WHAT_IS_PENDING_TODAY stays in the whitelist (the model may ask for it)
+    # but is answered in the reply, so it is never returned as an action.
+    declared = {action["type"] for action, _, _ in ALL_ACTIONS}
+    assert declared == {t.value for t in DeviceActionType} - {"WHAT_IS_PENDING_TODAY"}
+    assert len(ALL_ACTIONS) == 14
     assert set(REQUIRES_CONFIRMATION) == set(DeviceActionType)
     assert {DeviceActionType.DIAL, DeviceActionType.COMPOSE_MESSAGE} == PREPARES_ONLY
 
@@ -226,6 +228,38 @@ def test_whitelisted_action_is_returned(
     asyncio.run(_with_session(scenario))
 
 
+def test_dial_needs_a_target_and_sanitizes_the_phone() -> None:
+    """DIAL tells the app whom to dial; the phone is normalised once."""
+
+    async def scenario(session) -> None:
+        user = await _add_user(session)
+
+        # contact_name alone is enough to know whom to dial.
+        only_name, _ = await _run_service(
+            session, _model_json("Abrindo", {"type": "DIAL", "params": {"contact_name": " Ana "}}), user.id
+        )
+        assert only_name["action"] is not None
+        assert only_name["action"].params.contact_name == "Ana"
+
+        # phone alone, formatted: stripped to digits, keeping the leading '+'.
+        only_phone, _ = await _run_service(
+            session,
+            _model_json("Abrindo", {"type": "DIAL", "params": {"phone": "+55 (11) 99999-9999"}}),
+            user.id,
+        )
+        assert only_phone["action"] is not None
+        assert only_phone["action"].params.phone == "+5511999999999"
+
+        # Neither target: rejected by the whitelist, so no action is returned.
+        no_target, _ = await _run_service(
+            session, _model_json("Sem destino", {"type": "DIAL", "params": {}}), user.id
+        )
+        assert no_target["action"] is None
+        assert no_target["reply"] == "Sem destino"
+
+    asyncio.run(_with_session(scenario))
+
+
 # ---------------------------------------------------------------------------
 # Everything else is rejected
 # ---------------------------------------------------------------------------
@@ -250,7 +284,13 @@ REJECTED: list[tuple[Any, str]] = [
     ({"type": "OPEN_APP", "params": {}}, "missing app_name"),
     ({"type": "OPEN_APP", "params": {"app_name": ""}}, "empty app_name"),
     ({"type": "OPEN_SETTINGS_PANEL", "params": {"panel": "airplane_mode"}}, "bad panel"),
-    ({"type": "DIAL", "params": {"contact_name": "Ana"}}, "DIAL takes no params"),
+    ({"type": "DIAL", "params": {}}, "DIAL without a target"),
+    ({"type": "DIAL", "params": {"phone": "12345"}}, "phone with too few digits"),
+    ({"type": "DIAL", "params": {"phone": "ligue agora"}}, "phone without digits"),
+    (
+        {"type": "DIAL", "params": {"contact_name": "Ana", "phone": "+5511999999999", "shell": "x"}},
+        "extra param",
+    ),
     (
         {"type": "COMPOSE_MESSAGE", "params": {"app": "telegram", "contact_name": "A", "text": "x"}},
         "bad app",
@@ -628,7 +668,7 @@ def test_data_block_is_bounded() -> None:
 
 
 # ---------------------------------------------------------------------------
-# WHAT_IS_PENDING_TODAY is answered from the database
+# WHAT_IS_PENDING_TODAY is answered from the database, with no action
 # ---------------------------------------------------------------------------
 
 
@@ -649,7 +689,8 @@ def test_pending_today_is_rendered_from_the_database() -> None:
         result, _ = await _run_service(
             session, _model_json("Você tem 3 dias pendentes! Totalmente errado.", {"type": "WHAT_IS_PENDING_TODAY", "params": {}}), user.id
         )
-        assert result["action"].type == DeviceActionType.WHAT_IS_PENDING_TODAY
+        # It is a read: the answer is the reply, never an action to execute.
+        assert result["action"] is None
         # The model's prose is discarded; the answer comes from the rows.
         assert "3 dias" not in result["reply"]
         assert "Revisar vocabulário" in result["reply"]
@@ -1038,7 +1079,8 @@ def test_endpoint_answers_pending_today_from_the_caller_data(
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["action"]["type"] == "WHAT_IS_PENDING_TODAY"
+    # The answer is the reply; there is no action for the app to execute.
+    assert body["action"] is None
     assert "Estudar verbos" in body["reply"]
 
 

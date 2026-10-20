@@ -58,6 +58,9 @@ class AgentActionType(str, Enum):
     SHOW_AGENDA = "SHOW_AGENDA"
     MARK_DAY_COMPLETED = "MARK_DAY_COMPLETED"
 
+    # Backend action answered at proposal time (result injected in the reply).
+    WHAT_IS_PENDING_TODAY = "WHAT_IS_PENDING_TODAY"
+
     # Device actions (executed locally by the app).
     SET_VOLUME = "SET_VOLUME"
     SET_BRIGHTNESS = "SET_BRIGHTNESS"
@@ -72,7 +75,6 @@ class AgentActionType(str, Enum):
     NAVIGATE = "NAVIGATE"
     WEB_SEARCH = "WEB_SEARCH"
     PLAY_MUSIC = "PLAY_MUSIC"
-    WHAT_IS_PENDING_TODAY = "WHAT_IS_PENDING_TODAY"
 
 
 #: Action types the backend runs itself once the user confirms.
@@ -88,7 +90,16 @@ BACKEND_ACTION_TYPES: frozenset[AgentActionType] = frozenset(
         AgentActionType.CREATE_FLASHCARDS,
         AgentActionType.SHOW_AGENDA,
         AgentActionType.MARK_DAY_COMPLETED,
+        AgentActionType.WHAT_IS_PENDING_TODAY,
     }
+)
+
+#: Backend actions answered when the proposal is built: the result is
+#: rendered into the reply by :mod:`app.services.pending_today_service` and
+#: **no** ``PROPOSED`` row is persisted, so there is nothing to confirm or
+#: execute.  ``requires_confirmation`` is therefore ``False`` by design.
+SERVER_RESOLVED_ACTION_TYPES: frozenset[AgentActionType] = frozenset(
+    {AgentActionType.WHAT_IS_PENDING_TODAY}
 )
 
 #: Action types executed by the mobile app, never by the server.
@@ -107,7 +118,6 @@ DEVICE_ACTION_TYPES: frozenset[AgentActionType] = frozenset(
         AgentActionType.NAVIGATE,
         AgentActionType.WEB_SEARCH,
         AgentActionType.PLAY_MUSIC,
-        AgentActionType.WHAT_IS_PENDING_TODAY,
     }
 )
 
@@ -121,7 +131,6 @@ PREPARES_ONLY_TYPES: frozenset[AgentActionType] = frozenset(
 DEVICE_REQUIRE_CONFIRMATION: dict[AgentActionType, bool] = {
     AgentActionType.DIAL: True,
     AgentActionType.COMPOSE_MESSAGE: True,
-    AgentActionType.WHAT_IS_PENDING_TODAY: False,
     AgentActionType.SET_VOLUME: False,
     AgentActionType.SET_BRIGHTNESS: False,
     AgentActionType.TOGGLE_FLASHLIGHT: False,

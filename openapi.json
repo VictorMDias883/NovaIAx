@@ -10534,6 +10534,7 @@
           "CREATE_FLASHCARDS",
           "SHOW_AGENDA",
           "MARK_DAY_COMPLETED",
+          "WHAT_IS_PENDING_TODAY",
           "SET_VOLUME",
           "SET_BRIGHTNESS",
           "TOGGLE_FLASHLIGHT",
@@ -10546,8 +10547,7 @@
           "CREATE_CALENDAR_EVENT",
           "NAVIGATE",
           "WEB_SEARCH",
-          "PLAY_MUSIC",
-          "WHAT_IS_PENDING_TODAY"
+          "PLAY_MUSIC"
         ],
         "title": "AgentActionType",
         "description": "The closed set of tools the agent may propose.\n\nThe first block is executed **by the backend** after confirmation (or\nresolved server-side, for ``SHOW_AGENDA``); the second block mirrors the\nexisting device-command whitelist and is returned to the app for **local**\nexecution."
@@ -12688,11 +12688,36 @@
         "description": "Open the dialer with a contact ready to call.\n\n**Prepares only.**  The user still presses the call button; this action\nnever places a call."
       },
       "DialParams": {
-        "properties": {},
+        "properties": {
+          "contact_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 120
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Name"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          }
+        },
         "additionalProperties": false,
         "type": "object",
         "title": "DialParams",
-        "description": "Parameters for :attr:`DeviceActionType.DIAL`."
+        "description": "Parameters for :attr:`DeviceActionType.DIAL`.\n\nAt least one of ``contact_name``/``phone`` is required, so the app always\nknows whom to dial.  The phone is normalised server-side to digits with\nan optional leading ``+`` (``+55 (11) 99999-9999`` becomes\n``+5511999999999``); anything that does not leave 6–15 digits rejects the\nwhole action."
       },
       "DraftCreate": {
         "properties": {
@@ -18496,7 +18521,7 @@
           "params"
         ],
         "title": "WhatIsPendingTodayAction",
-        "description": "Answer with the roadmap items pending today.\n\nResolved **server-side**: the service renders the facts from the\ndatabase and the model's prose is discarded, so the answer cannot be\nhallucinated."
+        "description": "Answer with the roadmap items pending today.\n\nResolved **server-side**: the service renders the facts from the\ndatabase and the model's prose is discarded, so the answer cannot be\nhallucinated.  The rendered text *is* the reply and the action is\n**never returned to the client** — it is a read, not something the app\nexecutes — so ``requires_confirmation`` stays ``False`` and there is\nnothing to confirm.  It exists in the whitelist only so the model may\nstill ask for it."
       },
       "app__schemas__auth__UserResponse": {
         "properties": {

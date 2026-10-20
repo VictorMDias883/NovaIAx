@@ -2098,6 +2098,8 @@ async def update_app_config(
         "min_supported_app_version": form.get("min_supported_app_version", ""),
         "recommended_app_version": form.get("recommended_app_version", ""),
         "store_url": form.get("store_url", ""),
+        "support_email": form.get("support_email", ""),
+        "support_whatsapp_url": form.get("support_whatsapp_url", ""),
         "feature_flags": {
             module: _coerce_bool(form.get(f"feature_{module}")) for module in MODULE_FLAGS
         },

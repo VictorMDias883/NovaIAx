@@ -36,6 +36,7 @@ from app.db.session import SessionLocal
 from app.exceptions.api_errors import APIError, APIErrorCode
 from app.models.user import User, UserRole
 from app.repositories.user_repository import UserRepository
+from app.services.app_config_service import suspended_detail
 from app.services.subscription_service import Entitlement, SubscriptionService, enforce_feature
 
 #: Process-wide Redis client shared by every dependency injection.
@@ -152,12 +153,24 @@ async def _load_user(user_id: object, session: AsyncSession | None) -> User:
         # A suspended account is rejected on every request, centrally, so no
         # route can accidentally serve it.  Access tokens already issued stop
         # working the moment the operator suspends the account.
-        raise APIError(
-            403,
-            "Conta suspensa. Entre em contato com o suporte.",
-            code=APIErrorCode.ACCOUNT_SUSPENDED,
-        )
+        raise await _suspended_error(session)
     return user
+
+
+async def _suspended_error(session: AsyncSession | None) -> APIError:
+    """Build the ``account_suspended`` 403 with the configured support contact.
+
+    The detail is rendered by
+    :func:`~app.services.app_config_service.suspended_detail`.  The middleware
+    path (``session is None``) opens its own session, because the config must
+    be read before any temporary session is closed.
+    """
+    if isinstance(session, AsyncSession):
+        detail = await suspended_detail(session)
+    else:
+        async with SessionLocal() as temp_session:
+            detail = await suspended_detail(temp_session)
+    return APIError(403, detail, code=APIErrorCode.ACCOUNT_SUSPENDED)
 
 
 async def _release_read_transaction(session: AsyncSession | None) -> None:

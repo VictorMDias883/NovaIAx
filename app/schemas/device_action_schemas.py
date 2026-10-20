@@ -24,6 +24,7 @@ Two rules drive the shape of this module:
    can label them correctly instead of announcing "message sent".
 """
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal
@@ -211,7 +212,33 @@ class OpenSettingsPanelParams(_StrictModel):
 
 
 class DialParams(_StrictModel):
-    """Parameters for :attr:`DeviceActionType.DIAL`."""
+    """Parameters for :attr:`DeviceActionType.DIAL`.
+
+    At least one of ``contact_name``/``phone`` is required, so the app always
+    knows whom to dial.  The phone is normalised server-side to digits with
+    an optional leading ``+`` (``+55 (11) 99999-9999`` becomes
+    ``+5511999999999``); anything that does not leave 6–15 digits rejects the
+    whole action.
+    """
+
+    contact_name: str | None = Field(default=None, max_length=120)
+    phone: str | None = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def _require_target_and_normalize_phone(self) -> "DialParams":
+        if self.contact_name is not None:
+            self.contact_name = self.contact_name.strip() or None
+        if self.phone is not None:
+            raw = self.phone.strip()
+            normalized = (
+                "+" + re.sub(r"\D", "", raw[1:]) if raw.startswith("+") else re.sub(r"\D", "", raw)
+            )
+            if not re.fullmatch(r"\+?\d{6,15}", normalized):
+                raise ValueError("phone must have 6 to 15 digits, optionally starting with +")
+            self.phone = normalized
+        if self.contact_name is None and self.phone is None:
+            raise ValueError("DIAL requires contact_name or phone")
+        return self
 
 
 class ComposeMessageParams(_StrictModel):
@@ -427,7 +454,11 @@ class WhatIsPendingTodayAction(_Action):
 
     Resolved **server-side**: the service renders the facts from the
     database and the model's prose is discarded, so the answer cannot be
-    hallucinated.
+    hallucinated.  The rendered text *is* the reply and the action is
+    **never returned to the client** — it is a read, not something the app
+    executes — so ``requires_confirmation`` stays ``False`` and there is
+    nothing to confirm.  It exists in the whitelist only so the model may
+    still ask for it.
     """
 
     type: Literal[DeviceActionType.WHAT_IS_PENDING_TODAY] = DeviceActionType.WHAT_IS_PENDING_TODAY

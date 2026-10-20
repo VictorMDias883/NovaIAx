@@ -36,17 +36,16 @@ The two roadmap actions are resolved here
 ``MARK_DAY_COMPLETED`` and ``WHAT_IS_PENDING_TODAY`` need the caller's own
 objectives, so the service loads them itself instead of trusting the model:
 
-* ``WHAT_IS_PENDING_TODAY`` is answered **from the database**; the model's
-  prose is discarded so the facts cannot be hallucinated.
+* ``WHAT_IS_PENDING_TODAY`` is answered **from the database** and returned
+  with ``action=None``: it is a read, not something the app executes, so the
+  server-rendered answer *is* the reply and the model's prose is discarded
+  so the facts cannot be hallucinated.
 * ``MARK_DAY_COMPLETED`` is **owner-checked** before it is returned, so a
   model cannot aim at somebody else's roadmap.  The day is deliberately
   *not* marked here — the client confirms with the user and then calls
   ``PATCH /api/v1/objectives/{objective_id}/roadmap/days/{day_id}``, which
   performs the owner-checked write.  Writing during this request would make
   ``requires_confirmation`` meaningless.
-
-Both actions get a server-rendered reply, because a model asked to "mark the
-day" or "list what is pending" is prone to claiming it already did the work.
 """
 
 from datetime import UTC, date, datetime
@@ -72,6 +71,7 @@ from app.schemas.device_action_schemas import (
     DeviceActionType,
     MarkDayCompletedAction,
 )
+from app.services.pending_today_service import PendingTodayService
 from app.utils.json_extraction import extract_json
 from app.utils.untrusted import sanitize
 
@@ -124,7 +124,8 @@ class DeviceActionService:
         '{"reply": "texto", "action": {"type": "OPEN_APP", "params": {"app_name": "nome do app"}}}\n'
         '{"reply": "texto", "action": {"type": "OPEN_SETTINGS_PANEL", "params": {"panel": '
         '"wifi|bluetooth|internet|volume|display"}}}\n'
-        '{"reply": "texto", "action": {"type": "DIAL", "params": {}}}\n'
+        '{"reply": "texto", "action": {"type": "DIAL", "params": {"contact_name": "nome do '
+        'contato", "phone": "+5511999999999"}}}\n'
         '{"reply": "texto", "action": {"type": "COMPOSE_MESSAGE", "params": {"app": "sms|whatsapp", '
         '"contact_name": "nome do contato", "text": "texto da mensagem"}}}\n'
         '{"reply": "texto", "action": {"type": "SET_ALARM", "params": {"hour": 0-23, "minute": 0-59, '
@@ -259,7 +260,9 @@ class DeviceActionService:
             return {"reply": reply, "action": None}
 
         if action.type == DeviceActionType.WHAT_IS_PENDING_TODAY:
-            return {"reply": await self._render_pending_today(user_id), "action": action}
+            # A read, not an app action: the result replaces the reply and
+            # no action is returned (the client has nothing to execute).
+            return {"reply": await PendingTodayService(self.session).render(user_id), "action": None}
 
         if action.type == DeviceActionType.MARK_DAY_COMPLETED:
             return await self._resolve_mark_day_completed(
@@ -457,58 +460,6 @@ class DeviceActionService:
             objective_title=objective.title,
             status=day.status,
         )
-
-    async def _render_pending_today(self, user_id: int) -> str:
-        """Answer "what is pending today" from the database.
-
-        The reply is rendered here rather than taken from the model, so the
-        answer reflects the rows that actually exist instead of what the
-        model claims they are.
-        """
-        objectives = await self.objective_repo.list_by_user(user_id, 0, self.MAX_OBJECTIVES)
-        if not objectives:
-            return "Você ainda não cadastrou nenhum objetivo."
-
-        # One query for every objective's days instead of one per objective.
-        days_by_objective = await self.day_repo.list_by_objectives([o.id for o in objectives])
-
-        today = self._today()
-        pending_today: list[str] = []
-        # (day_date, target) of the soonest pending day that is not today.
-        next_pending: tuple[datetime, _OwnedDay] | None = None
-
-        for objective in objectives:
-            for day in days_by_objective.get(objective.id, []):
-                if day.status != RoadmapDayStatus.PENDING:
-                    continue
-                target = _OwnedDay(
-                    day_id=day.id,
-                    day_number=day.day_number,
-                    objective_id=objective.id,
-                    objective_title=objective.title,
-                    status=day.status,
-                )
-                if day.day_date.date() == today:
-                    pending_today.append(
-                        f"«{objective.title}» dia {day.day_number}: "
-                        f"{day.content or 'sem descrição'}"
-                    )
-                elif next_pending is None or day.day_date < next_pending[0]:
-                    next_pending = (day.day_date, target)
-
-        if not pending_today:
-            text = "Não há dias pendentes para hoje."
-            if next_pending is not None:
-                soonest = next_pending[1]
-                text += (
-                    f" O próximo é o dia {soonest.day_number} de "
-                    f"«{soonest.objective_title}», em {next_pending[0].date().isoformat()}."
-                )
-            return text
-
-        bullets = "\n".join(f"- {entry}" for entry in pending_today)
-        plural = "dia" if len(pending_today) == 1 else "dias"
-        return f"Você tem {len(pending_today)} {plural} pendente(s) para hoje:\n{bullets}"
 
 
 def _require_mark_day(action: DeviceAction) -> MarkDayCompletedAction:

@@ -14,6 +14,7 @@ The public payload served by ``GET /api/v1/app-config`` is:
       "maintenance": {"enabled": false, "message": "..."},
       "versions": {"min_supported": "1.0.0", "recommended": "1.0.0", "store_url": "..."},
       "features": {"medications": true, "finance": true, ...},
+      "support": {"email": "suporte@novaiax.com.br", "whatsapp_url": null},
       "announcements": []
     }
 
@@ -24,6 +25,7 @@ poll.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import re
@@ -52,6 +54,7 @@ MODULE_FLAGS: tuple[str, ...] = (
 PUBLIC_CACHE_KEY = "app_config:public"
 
 _VERSION_RE = re.compile(r"^\d+(?:\.\d+){0,2}$")
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,20 @@ def _as_store_url(value: Any) -> str:
     text = str(value or "").strip()
     if text and not text.startswith(("http://", "https://")):
         raise ValueError("o link da loja deve começar com http:// ou https://")
+    return text[:500]
+
+
+def _as_email(value: Any) -> str:
+    text = str(value or "").strip()
+    if not _EMAIL_RE.match(text):
+        raise ValueError(f"e-mail de suporte inválido: {text!r}")
+    return text[:254]
+
+
+def _as_whatsapp_url(value: Any) -> str:
+    text = str(value or "").strip()
+    if text and not text.startswith("https://"):
+        raise ValueError("o link do WhatsApp deve começar com https://")
     return text[:500]
 
 
@@ -125,6 +142,8 @@ SPECS: dict[str, ConfigSpec] = {
     "min_supported_app_version": ConfigSpec("min_supported_app_version", "1.0.0", _as_version),
     "recommended_app_version": ConfigSpec("recommended_app_version", "1.0.0", _as_version),
     "store_url": ConfigSpec("store_url", "", _as_store_url),
+    "support_email": ConfigSpec("support_email", "suporte@novaiax.com.br", _as_email),
+    "support_whatsapp_url": ConfigSpec("support_whatsapp_url", "", _as_whatsapp_url),
     "feature_flags": ConfigSpec("feature_flags", _as_feature_flags({}), _as_feature_flags),
     "announcements": ConfigSpec("announcements", [], _as_announcements),
 }
@@ -169,7 +188,23 @@ class AppConfigService:
                 "store_url": config["store_url"],
             },
             "features": config["feature_flags"],
+            "support": {
+                "email": config["support_email"],
+                "whatsapp_url": config["support_whatsapp_url"] or None,
+            },
             "announcements": config["announcements"],
+        }
+
+    async def load_support(self) -> dict[str, str | None]:
+        """Return the support contact used in user-facing error messages.
+
+        The email is always present; ``whatsapp_url`` is ``None`` until an
+        operator configures one.
+        """
+        config = await self.load()
+        return {
+            "email": str(config["support_email"]),
+            "whatsapp_url": str(config["support_whatsapp_url"]) or None,
         }
 
     async def load_public(self, redis: Any | None) -> dict[str, Any]:
@@ -212,11 +247,47 @@ class AppConfigService:
         return await self.load()
 
 
+#: Static ``account_suspended`` detail, used when the support contact cannot
+#: be read from the config.
+SUSPENDED_DETAIL = "Conta suspensa. Entre em contato com o suporte."
+
+
+async def suspended_detail(session: AsyncSession) -> str:
+    """Compose the ``account_suspended`` message with the support contact.
+
+    The contact comes from the ``support`` block of the remote app config, so
+    an operator can change it from the admin panel without a deploy.  A
+    config failure never breaks the rejection: :data:`SUSPENDED_DETAIL` is
+    returned instead.
+    """
+    try:
+        support = await AppConfigService(session).load_support()
+    except Exception:  # noqa: BLE001 - the rejection must always be raised
+        with contextlib.suppress(Exception):
+            await session.rollback()
+        return SUSPENDED_DETAIL
+
+    email = str(support.get("email") or "").strip()
+    whatsapp = str(support.get("whatsapp_url") or "").strip()
+    if email and whatsapp:
+        return (
+            "Conta suspensa. Entre em contato com o suporte em "
+            f"{email} ou pelo WhatsApp {whatsapp}."
+        )
+    if email:
+        return f"Conta suspensa. Entre em contato com o suporte em {email}."
+    if whatsapp:
+        return f"Conta suspensa. Entre em contato com o suporte pelo WhatsApp {whatsapp}."
+    return SUSPENDED_DETAIL
+
+
 __all__ = [
     "AppConfigService",
     "ConfigSpec",
     "MODULE_FLAGS",
     "PUBLIC_CACHE_KEY",
     "SPECS",
+    "SUSPENDED_DETAIL",
     "default_config",
+    "suspended_detail",
 ]

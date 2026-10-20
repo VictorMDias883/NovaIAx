@@ -42,6 +42,7 @@ from app.exceptions.api_errors import APIError, APIErrorCode
 from app.models.consent import DEFAULT_CONSENT_TYPES
 from app.models.user import UserRole
 from app.repositories.user_repository import UserRepository
+from app.services.app_config_service import suspended_detail
 from app.services.privacy_service import ConsentService
 
 logger = get_logger(__name__)
@@ -205,7 +206,7 @@ class AuthService:
             # so the client is forced to re-authenticate (and fails there too).
             raise APIError(
                 403,
-                "Conta suspensa. Entre em contato com o suporte.",
+                await suspended_detail(self.session),
                 code=APIErrorCode.ACCOUNT_SUSPENDED,
             )
 
@@ -332,7 +333,7 @@ class AuthService:
             await self.login_rate_limiter.on_success(command.email, client_ip)
             raise APIError(
                 403,
-                "Conta suspensa. Entre em contato com o suporte.",
+                await suspended_detail(self.session),
                 code=APIErrorCode.ACCOUNT_SUSPENDED,
             )
 

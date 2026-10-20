@@ -49,6 +49,20 @@
            value="{{ app_config.store_url }}" placeholder="https://play.google.com/...">
   </div>
 
+  <h2>Suporte</h2>
+  <p class="muted">Contato exibido ao usuário em mensagens da conta, como a suspensão.</p>
+  <div class="form-group">
+    <label for="support_email">E-mail de suporte</label>
+    <input type="email" id="support_email" name="support_email" required
+           value="{{ app_config.support_email }}" placeholder="suporte@novaiax.com.br" maxlength="254">
+  </div>
+  <div class="form-group">
+    <label for="support_whatsapp_url">Link do WhatsApp (opcional)</label>
+    <input type="url" id="support_whatsapp_url" name="support_whatsapp_url"
+           value="{{ app_config.support_whatsapp_url }}"
+           placeholder="https://wa.me/5511999999999" maxlength="500">
+  </div>
+
   <h2>Módulos</h2>
   <div class="form-group">
     {% for module in modules %}

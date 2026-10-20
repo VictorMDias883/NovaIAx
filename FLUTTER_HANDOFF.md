@@ -343,9 +343,9 @@ server clears the cached conversation, so the **next** message starts fresh.
 
 ### 6.2 Action reference (whitelist)
 
-Only these types are ever returned; anything else the model emits is silently
-dropped. `params` are strict — an unknown key or an out-of-range value rejects
-the whole action.
+Only these types are ever returned as an action; anything else the model
+emits is silently dropped. `params` are strict — an unknown key or an
+out-of-range value rejects the whole action.
 
 | `type` | `executor` | `params` | `requires_confirmation` | `prepares_only` |
 |--------|-----------|----------|-------------------------|-----------------|
@@ -364,7 +364,7 @@ the whole action.
 | `TOGGLE_FLASHLIGHT` | device | `{on: bool}` | no | no |
 | `OPEN_APP` | device | `{app_name}` | no | no |
 | `OPEN_SETTINGS_PANEL` | device | `{panel: wifi\|bluetooth\|internet\|volume\|display}` | no | no |
-| `DIAL` | device | `{}` | yes | **yes** |
+| `DIAL` | device | `{contact_name?, phone?}` — at least one required; `phone` is normalised to digits with an optional leading `+` | yes | **yes** |
 | `COMPOSE_MESSAGE` | device | `{app: sms\|whatsapp, contact_name, text}` | yes | **yes** |
 | `SET_ALARM` | device | `{hour: 0–23, minute: 0–59, label?}` | no | no |
 | `SET_TIMER` | device | `{seconds: 1–86400, label?}` | no | no |
@@ -372,7 +372,12 @@ the whole action.
 | `NAVIGATE` | device | `{destination}` | no | no |
 | `WEB_SEARCH` | device | `{query}` | no | no |
 | `PLAY_MUSIC` | device | `{query}` | no | no |
-| `WHAT_IS_PENDING_TODAY` | device | `{}` (resolved server-side) | no | no |
+| `WHAT_IS_PENDING_TODAY` | backend (server-resolved) | `{}` — the backend renders the pending-today facts **into `reply`** and no action row is ever proposed | no | no |
+
+`WHAT_IS_PENDING_TODAY` stays in the model's vocabulary but is never
+returned as an action: the server-rendered answer *is* the reply, so the app
+only displays it (same behaviour as `POST /agents/device/command`, which
+answers it with `action: null`).
 
 ### 6.3 Device action lifecycle
 
@@ -790,6 +795,7 @@ public allow-list, cached server-side, and supports `ETag`/`If-None-Match`
   "versions": {"min_supported": "1.0.0", "recommended": "1.0.0", "store_url": ""},
   "features": {"medications": true, "finance": true, "study": true, "logbook": true,
                "community": true, "device_actions": true, "voice": true},
+  "support": {"email": "suporte@novaiax.com.br", "whatsapp_url": null},
   "announcements": [{"title": "...", "body": "...", "level": "info"}]
 }
 ```
@@ -811,6 +817,11 @@ public allow-list, cached server-side, and supports `ETag`/`If-None-Match`
 - **Feature flags:** a `false` flag means the module is rolled off for
   everyone — hide the tab/entry point (or show it as "em breve") instead of
   calling the endpoint and surfacing errors.
+- **Support:** `support.email` is always present (the operator edits it in
+  *Configurações → Aplicativo → Suporte*); `support.whatsapp_url` is `null`
+  until configured (a `https://wa.me/...` link). Use it for any "fale com o
+  suporte" screen — the `account_suspended` detail already includes it
+  (§17.5).
 - **Announcements:** render as dismissible banners, `level` as severity
   (`info` and up); max 20 items, server-capped.
 
@@ -836,11 +847,16 @@ display component.
 
 A suspended account now gets **`403`** with `{"detail": "...", "code":
 "account_suspended"}` on **every** authenticated call (and its refresh tokens
-are rejected). Expected app behavior:
+are rejected). The `detail` is built server-side from the configured support
+contact — e.g. *"Conta suspensa. Entre em contato com o suporte em
+suporte@novaiax.com.br ou pelo WhatsApp https://wa.me/... ."* (only the
+configured channels appear; the WhatsApp part is omitted when
+`support.whatsapp_url` is `null`). Expected app behavior:
 
 1. On `403 account_suspended`: drop the session, discard the token pair and
-   show a locked screen — "Sua conta foi suspensa. Fale com o suporte." —
-   with the support contact from `GET /app-config`-adjacent contacts.
+   show a locked screen — "Sua conta foi suspensa." — rendering the support
+   contact from the `support` block of `GET /app-config` (§17.3), which is
+   the same source the `detail` text already uses.
 2. Do **not** attempt the refresh-on-401 flow (§2.3): refresh is refused too,
    and retrying only burns the rate limit.
 3. Do **not** offer re-login until the user has contacted support; an
