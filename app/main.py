@@ -82,7 +82,7 @@ settings = get_settings()
 #
 # Migrations always run before uvicorn starts (via ``entrypoint.sh``), so by
 # the time this handler runs the schema is guaranteed to be up to date.  That
-# makes this the right place to bootstrap the default ADMIN account.
+# makes this the right place to bootstrap the operator account.
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifecycle handler.
@@ -93,18 +93,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     ``create_all()`` against a production database where the schema
     should only evolve via versioned migrations.
 
-    Data bootstrap: a default ADMIN account is created on startup when no
-    administrator exists yet (see :func:`app.db.bootstrap.ensure_default_admin`).
-    This is idempotent — once an admin exists, every subsequent restart is a
-    no-op.
+    Data bootstrap: the operator account is created (or promoted) on startup
+    from the ``ADMIN_BOOTSTRAP_*`` environment variables (see
+    :func:`app.db.bootstrap.bootstrap_admin_account`).  This is idempotent —
+    an existing account is never modified (its password is never re-applied),
+    so every restart after the first one is a no-op.
 
     The bootstrap module is imported lazily (rather than at module level) to
     keep DB-side startup logic out of the import-time path.
     """
     from app.clients.ai_client import close_http_client
-    from app.db.bootstrap import ensure_default_admin
+    from app.db.bootstrap import bootstrap_admin_account
 
-    await ensure_default_admin()
+    await bootstrap_admin_account()
     yield
     await close_http_client()
 

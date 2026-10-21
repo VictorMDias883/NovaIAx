@@ -95,7 +95,18 @@ def _connect_args() -> dict[str, object]:
 # ``pool_size``/``max_overflow`` bound concurrency (10 + 10 by default) so a
 # burst of requests queues for a connection instead of exhausting Postgres'
 # connection limit and taking the whole instance down.
-engine = create_async_engine(DATABASE_URL, echo=False, connect_args=_connect_args(), **_engine_pool_kwargs())
+#
+# ``hide_parameters=True`` keeps the bound values out of the SQLAlchemy
+# exception messages: a failed insert would otherwise expose the bound
+# parameters (a password **hash** among them) in the logs, since the error
+# text quotes the statement and its parameters.
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    connect_args=_connect_args(),
+    hide_parameters=True,
+    **_engine_pool_kwargs(),
+)
 
 # Session factory: each call to ``SessionLocal()`` returns a new
 # ``AsyncSession`` instance.  ``expire_on_commit=False`` prevents

@@ -38,7 +38,7 @@ Cliente → Middlewares (RateLimit → Auth → Logging → SecurityHeaders → 
 - **Objectives/goals**: `ObjectiveService` generates a 7-day AI roadmap per window, persists one `RoadmapDay` per calendar day (each carrying a *meta básica*), and `renew_roadmap` is callable every 7 days up to `due_date` (`app/services/objective_service.py`).
 - **Agents**: `ObjectiveAssistantService` collects goal data conversationally (multi-turn cache) then auto-registers the objective; `GeneralAgentService` injects the user's objectives + roadmap-day status as context per turn; `ChatCompletionService` binds an admin-managed system prompt (`/ai/chat`).
 - **Proxy**: `/proxy/{service}/...` forwards to configured downstreams with per-caller Redis cache, header stripping, 1 MiB payload cap, per-service timeout (`app/api/v1/proxy.py`).
-- **Admin bootstrap**: on startup, creates the default ADMIN if none exists and re-syncs the default admin's password to `ADMIN_DEFAULT_PASSWORD` when it doesn't match (`app/db/bootstrap.py`).
+- **Admin bootstrap**: on startup, the API creates the operator ADMIN from `ADMIN_BOOTSTRAP_EMAIL`/`ADMIN_BOOTSTRAP_PASSWORD` when the e-mail is free (`ON CONFLICT (email) DO NOTHING`, no locks); an existing account keeps its own password and role — it is only promoted when `ADMIN_BOOTSTRAP_PROMOTE_EXISTING` is on (`app/db/bootstrap.py`).
 
 ---
 
@@ -156,7 +156,7 @@ Auth column: **public** = no credential needed · **user** = valid JWT or API ke
 
 | Area | Status | Details |
 | --- | --- | --- |
-| **Admin bootstrap ignored `.env` password** | ✅ Fixed | Root cause was env-var name mismatch (`DEFAULT_ADMIN_PASSWORD` in `.env` vs `ADMIN_DEFAULT_PASSWORD` field). Config now honors both; bootstrap re-syncs a mismatched default-admin password on startup. Committed in `36078e6`; 8 tests. |
+| **Admin bootstrap ignored `.env` password** | ✅ Fixed | Root cause was env-var name mismatch (`DEFAULT_ADMIN_PASSWORD` in `.env` vs `ADMIN_DEFAULT_PASSWORD` field). The canonical names are now `ADMIN_BOOTSTRAP_EMAIL`/`ADMIN_BOOTSTRAP_PASSWORD` (the old ones still work as deprecated aliases, with one warning). The bootstrap applies the password **only when the account is created** — an existing account is never re-hashed. Committed in `36078e6`; 18 tests (`tests/test_admin_bootstrap.py`). |
 | **System-prompts GET required ADMIN** | ✅ Fixed | `require_admin` → `get_current_user` on list + by-id; writes unchanged. Committed in `7df886b`; 4 tests (`tests/test_system_prompt_read_access.py`). |
 | **Cache flush** | ✅ Fixed | Per-user flush (`/cache/flush`): conversations + user-scoped `ai_response` entries (key-pattern scan) + proxy index sets. Committed in `ffaf782`; service imports a constant from `app.api.v1.proxy` (`cache_flush_service.py`) — layer smell. |
 | **Groq free-tier 429 exposure** | 🟡 Partially mitigiated | Pacer (20 RPM / 6K TPM) + semaphore (2) + no silent retries. Might revisit: real tokenizer, cross-worker budget sharing, per-route budget. |
@@ -217,7 +217,7 @@ Suite runs on **SQLite + in-memory Redis fallback** through the real ASGI app (`
 - Managed Postgres `novaiax-db` (free), `DATABASE_URL` auto-injected (normalized to `postgresql+asyncpg` in `config.py`).
 - **Redis is external (Upstash)** — Render free has no managed Redis; `REDIS_URL` is a manual secret.
 - Migrations run **in-container** via `entrypoint.sh` (`alembic upgrade head` then uvicorn), because Render's `preDeployCommand` is paid-only.
-- Secrets (set once in dashboard, `sync: false`): `SECRET_KEY`, `GROQ_API_KEY`, `MASTER_API_KEY`, `DEFAULT_ADMIN_PASSWORD` (legacy name; `ADMIN_DEFAULT_PASSWORD` also accepted), `REDIS_URL`. Non-secrets committed in `render.yaml`.
+- Secrets (set once in dashboard, `sync: false`): `SECRET_KEY`, `GROQ_API_KEY`, `MASTER_API_KEY`, `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD` (the account the API creates for itself; the old `ADMIN_DEFAULT_*` names still work as deprecated aliases), `REDIS_URL`. Non-secrets committed in `render.yaml`.
 - Production boot **hard-fails** if `SECRET_KEY` is a placeholder or `MASTER_API_KEY`/`GROQ_API_KEY`/`DATABASE_URL`/`REDIS_URL` are missing (`config.py:_validate_production_secrets`).
 
 **Fragile points:**

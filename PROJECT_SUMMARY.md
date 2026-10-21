@@ -172,7 +172,7 @@ NovaIAx/
 │   │   └── network.py                # get_client_ip (X-Forwarded-For only when trusted)
 │   ├── db/
 │   │   ├── session.py                # AsyncEngine, SessionLocal, Base, init_db (tests only)
-│   │   └── bootstrap.py              # ensure_default_admin() (idempotent, runs in lifespan)
+│   │   └── bootstrap.py              # bootstrap_admin_account() (idempotent, runs in lifespan)
 │   ├── exceptions/handlers.py        # Global JSON error handlers
 │   ├── middlewares/
 │   │   ├── rate_limit_middleware.py  # Redis sliding window per client IP
@@ -219,12 +219,13 @@ NovaIAx/
 ### 4.1 Every request (universal path)
 
 1. **Boot** (`app/main.py:61-108`): `configure_logging()` → `get_settings()` (runs
-   `_validate_admin_password`, `_validate_master_api_key_visibility`,
+   `_validate_admin_bootstrap`, `_validate_master_api_key_visibility`,
    `_validate_production_secrets`) → app created → middlewares registered → routers mounted at
    `/api/v1` (`app/main.py:152`), admin router unprefixed (`:157`), static mount (`:160`) →
    exception handlers registered (`:167-170`).
-2. **Lifespan start** (`app/main.py:85-108`): `ensure_default_admin()` — takes a table lock,
-   and either creates the first admin, re-syncs `ADMIN_DEFAULT_PASSWORD`, or no-ops.
+2. **Lifespan start** (`app/main.py:85-108`): `bootstrap_admin_account()` — inserts the
+   operator account with `ON CONFLICT (email) DO NOTHING` (no locks), or promotes an
+   existing account when `ADMIN_BOOTSTRAP_PROMOTE_EXISTING` is on; never re-hashes a password.
 3. **Per request**: `RateLimitMiddleware` prunes a 60 s Redis sorted set and enforces 60/min
    (or 10/min on AI paths) keyed by resolved client IP
    (`app/middlewares/rate_limit_middleware.py:88-137`) → `AuthMiddleware` resolves the identity
@@ -521,7 +522,7 @@ declared only by configuration/docs — neither host is hardcoded in code.
 | `ENVIRONMENT` | `development` | `production` **hard-fails boot** unless `SECRET_KEY`, `MASTER_API_KEY`, `GROQ_API_KEY`, `DATABASE_URL`, `REDIS_URL` are all set to non-placeholder values (`config.py:326-356`) |
 | `SECRET_KEY` | `change-me-in-production` | HS256 signing key |
 | `ACCESS_TOKEN_TTL_MINUTES` / `REFRESH_TOKEN_TTL_DAYS` | 15 / 7 | Token lifetimes |
-| `ADMIN_DEFAULT_EMAIL` / `ADMIN_DEFAULT_PASSWORD` | `admin@admin.com` / generated | Bootstrap admin; if the password is unset a random one is generated and **logged once** (`app/db/bootstrap.py:83-101`) |
+| `ADMIN_BOOTSTRAP_EMAIL` / `ADMIN_BOOTSTRAP_PASSWORD` | unset / unset | Operator account created by the API on startup (`app/db/bootstrap.py`); the password is applied only when the account is created.  `ADMIN_DEFAULT_*` still work as deprecated aliases |
 | `MASTER_API_KEY` | unset | Any request carrying it is fully trusted (`app/core/security.py:167-169`) |
 | `DATABASE_URL` | `postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax` (dev) / required (prod) | Auto-normalised to the `asyncpg` scheme (`config.py:20-36,106-118`) |
 | `REDIS_URL` | `redis://redis:6379/0` (dev) / required (prod) | |
@@ -606,11 +607,11 @@ Ordered roughly by impact. Each item is grounded in a specific location.
    is absent (`admin.py:150-152`). A cross-site POST does not carry Lax cookies, so
    `expected is None` and validation is skipped; the real protection is the session cookie's
    own `SameSite=Lax` (`admin.py:281`). The token machinery only helps in same-site cases.
-6. **Bootstrap re-asserts the admin password on every boot.** `ensure_default_admin` re-hashes
-   `ADMIN_DEFAULT_PASSWORD` into the stored admin row whenever the hashes differ
-   (`app/db/bootstrap.py:65-76`). `render.yaml:88-90` sets `DEFAULT_ADMIN_PASSWORD` as a
-   long-lived secret, so a known admin password is permanently re-armed on each restart. The
-   docstring's "logged exactly once" guarantee (`:33-35`) only covers the randomly-generated case.
+6. **Bootstrap no longer re-asserts the admin password.** `bootstrap_admin_account`
+   (`app/db/bootstrap.py`) applies `ADMIN_BOOTSTRAP_PASSWORD` **only** when the account is
+   created; an existing account keeps its own password (the insert is
+   `ON CONFLICT (email) DO NOTHING`, without locks), so a long-lived secret in
+   `render.yaml` is no longer re-armed on each restart.
 7. **Public OpenAPI schema.** `/docs` and `/openapi.json` are explicitly allowlisted
    (`auth_middleware.py:46-47`), publishing the full route inventory, including which routes are
    admin-only, to unauthenticated callers. `/redoc` is *not* allowlisted — an inconsistency.

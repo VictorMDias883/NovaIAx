@@ -9,11 +9,19 @@ it does **not** connect to the database.
 It prints two statements so it works whether or not the account already
 exists:
 
-* an ``UPDATE`` that promotes an existing user with the given e-mail, and
-* an ``INSERT`` that creates the account from scratch.
+* an ``UPDATE`` that promotes an existing user with the given e-mail (role
+  only — the stored password is left alone), and
+* an ``INSERT`` that creates the account from scratch, with
+  ``ON CONFLICT (email) DO NOTHING`` so an existing password is never
+  overwritten.
 
 Run the one that applies.  The password is hashed with the same passlib
 context the application uses, so it can be verified at login.
+
+Tip: the API can also create the operator account by itself — set
+``ADMIN_BOOTSTRAP_EMAIL`` and ``ADMIN_BOOTSTRAP_PASSWORD`` before the first
+deploy (see ``app/db/bootstrap.py``).  The password is then applied only when
+the account is created.
 
 Usage::
 
@@ -41,19 +49,28 @@ def _sql_literal(value: str) -> str:
 
 
 def build_sql(name: str, email: str, password_hash: str) -> str:
-    """Return the promote-and-create SQL for one admin account."""
+    """Return the promote-and-create SQL for one admin account.
+
+    The two statements are independent and can be run in any order:
+
+    * the ``UPDATE`` only changes the **role** — it never touches the
+      password of an account that already exists;
+    * the ``INSERT`` applies the password only when the account is created
+      (``ON CONFLICT (email) DO NOTHING``), so running it against an
+      existing account — including the one created by the startup bootstrap
+      from ``ADMIN_BOOTSTRAP_*`` — leaves that password untouched.
+    """
     name_lit = _sql_literal(name)
     email_lit = _sql_literal(email)
     hash_lit = _sql_literal(password_hash)
     return (
         "-- 1) Promote an existing account (run this if the e-mail already exists)\n"
+        "--    Only the role changes: an existing password is never overwritten.\n"
         f"UPDATE users SET role = 'ADMIN', refresh_token_valid_after = now() WHERE email = {email_lit};\n\n"
         "-- 2) Create the account from scratch (run this if it does not)\n"
-        "INSERT INTO users (full_name, email, password_hash, role)\n"
-        f"VALUES ({name_lit}, {email_lit}, {hash_lit}, 'ADMIN')\n"
-        "ON CONFLICT (email) DO UPDATE\n"
-        "    SET role = 'ADMIN', password_hash = EXCLUDED.password_hash,\n"
-        "        refresh_token_valid_after = now();\n"
+        "INSERT INTO users (full_name, email, password_hash, role, refresh_token_valid_after, birth_date)\n"
+        f"VALUES ({name_lit}, {email_lit}, {hash_lit}, 'ADMIN', now(), DATE '1990-01-01')\n"
+        "ON CONFLICT (email) DO NOTHING;\n"
     )
 
 

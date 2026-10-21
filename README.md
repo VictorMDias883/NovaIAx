@@ -276,7 +276,10 @@ Veja [.env.example](.env.example) para a lista completa.
 | `DATABASE_URL` | `postgresql+asyncpg://novaiax:novaiax@postgres:5432/novaiax` | Conexão com o banco |
 | `REDIS_URL` | `redis://redis:6379/0` | Conexão com o Redis |
 | `ALLOWED_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Origens permitidas no CORS |
-| `DEFAULT_ADMIN_PASSWORD` | `changeme123` | Senha do admin padrão do fluxo legado |
+| `ADMIN_BOOTSTRAP_EMAIL` | — | E-mail da conta de operador criada pela API no boot (só quando o e-mail ainda não existe) |
+| `ADMIN_BOOTSTRAP_PASSWORD` | — | Senha da conta de operador (≥ 12 caracteres em produção; aplicada **apenas** na criação) |
+| `ADMIN_BOOTSTRAP_NAME` | `Administrador` | Nome exibido da conta de operador |
+| `ADMIN_BOOTSTRAP_PROMOTE_EXISTING` | `false` | Promove para ADMIN uma conta existente com o mesmo e-mail |
 | `MASTER_API_KEY` | — | Chave mestre que contorna a validação de API keys |
 | `DOWNSTREAM_SERVICES_JSON` | `[{"name":"ai","base_url":"http://mock-ai-service:8001","timeout_seconds":5}]` | Serviços downstream do proxy |
 | `RATE_LIMIT_DEFAULT` | `60` | Limite geral (req/min), janela independente |

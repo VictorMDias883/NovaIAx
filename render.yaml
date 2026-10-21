@@ -113,10 +113,21 @@ services:
       # Bypass key trusted by every request — required in production.
       - key: MASTER_API_KEY
         sync: false
-      # First-admin bootstrap password (legacy name DEFAULT_ADMIN_PASSWORD
-      # still works); optional — a random one is logged when unset.
-      - key: ADMIN_DEFAULT_PASSWORD
+      # Operator account created automatically by the API on the first boot.
+      # Set the e-mail and a strong password (>= 12 characters) in the
+      # dashboard, log in at /admin/login and then remove both variables:
+      # the password is applied only when the account is created.
+      - key: ADMIN_BOOTSTRAP_EMAIL
         sync: false
+      - key: ADMIN_BOOTSTRAP_PASSWORD
+        sync: false
+      # Display name of the bootstrapped account.
+      - key: ADMIN_BOOTSTRAP_NAME
+        value: Administrador
+      # Promote an existing (non-admin) account with the same e-mail to
+      # ADMIN.  Off: an existing account is never modified.
+      - key: ADMIN_BOOTSTRAP_PROMOTE_EXISTING
+        value: "false"
       # Google Play billing verification (optional — billing is inert
       # without the service-account key).
       - key: GOOGLE_PLAY_SERVICE_ACCOUNT_JSON

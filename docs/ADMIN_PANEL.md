@@ -51,11 +51,14 @@ python -m scripts.seed_dev
 python -m scripts.seed_dev --admin-email dev@novaiax.dev --admin-password '...'
 ```
 
-Fora de produção, o bootstrap também cria `ADMIN_DEFAULT_EMAIL`
-(padrão `admin@admin.com`) na primeira subida quando não existe nenhum admin,
-usando `ADMIN_DEFAULT_PASSWORD` (ou uma senha aleatória logada uma única vez).
-Em produção isso é ignorado de propósito: senha de admin via env var é uma
-backdoor de deployment.
+A API também cria a conta de operador sozinha, a cada boot, a partir de
+`ADMIN_BOOTSTRAP_EMAIL` e `ADMIN_BOOTSTRAP_PASSWORD`: o insert é idempotente
+(`ON CONFLICT (email) DO NOTHING`, sem locks) e a senha só é aplicada
+**quando a conta é criada** — uma conta existente nunca tem a senha trocada
+nem é rebaixada. Em produção uma senha curta (menos de 12 caracteres) ou uma
+senha conhecida é recusada: o app continua no ar e registra o motivo no log.
+Os nomes antigos `ADMIN_DEFAULT_EMAIL` / `ADMIN_DEFAULT_PASSWORD` continuam
+funcionando como aliases depreciados (com um aviso no log).
 
 ---
 
@@ -70,8 +73,11 @@ backdoor de deployment.
 | `ADMIN_ALLOWED_IPS` | *(unset)* | Allowlist de IP (CSV). Fora dela `/admin` responde `403`. Com proxy, use `TRUST_PROXY_HEADERS=true`. |
 | `ADMIN_SESSION_IDLE_MINUTES` | `60` | Timeout por inatividade. |
 | `ADMIN_SESSION_ABSOLUTE_HOURS` | `8` | Vida máxima da sessão. |
-| `ADMIN_DEFAULT_EMAIL` | `admin@admin.com` | E-mail do admin criado pelo bootstrap **fora** de produção. |
-| `ADMIN_DEFAULT_PASSWORD` / `DEFAULT_ADMIN_PASSWORD` | *(unset)* | Senha do bootstrap fora de produção. Sem ela, uma aleatória é gerada e logada uma vez. |
+| `ADMIN_BOOTSTRAP_EMAIL` | *(unset)* | E-mail da conta de operador criada pelo bootstrap da API. |
+| `ADMIN_BOOTSTRAP_PASSWORD` | *(unset)* | Senha da conta — aplicada somente quando a conta é criada. |
+| `ADMIN_BOOTSTRAP_NAME` | `Administrador` | Nome exibido da conta de operador. |
+| `ADMIN_BOOTSTRAP_PROMOTE_EXISTING` | `false` | Promove para ADMIN uma conta existente com o mesmo e-mail (padrão: não toca em conta existente). |
+| `ADMIN_DEFAULT_EMAIL` / `ADMIN_DEFAULT_PASSWORD` | *(unset)* | Aliases depreciados das duas primeiras variáveis (funcionam, mas logam um aviso na subida). |
 
 ---
 

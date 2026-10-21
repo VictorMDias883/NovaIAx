@@ -23,7 +23,7 @@ The committed [`render.yaml`](render.yaml) Blueprint creates:
 | --- | --- |
 | Web service `novaiax-gateway` | `runtime: docker` — uses the existing `Dockerfile` as-is; region **`virginia`**, plan **`free`**, health check at **`/health`**. No port is hardcoded: Render injects `$PORT` and `entrypoint.sh` binds uvicorn to `${PORT:-8000}` with `--proxy-headers`. |
 | PostgreSQL `novaiax-db` | Render-managed Postgres, plan `free`. Its connection string is injected into the web service's `DATABASE_URL` via `fromDatabase` (no manual URL rewriting — the app normalises `postgresql://` → `postgresql+asyncpg://` internally). |
-| Secrets | `SECRET_KEY` (Render-generated via `generateValue: true`), plus `MIGRATION_DATABASE_URL`, `REDIS_URL`, `GROQ_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `AI_PROVIDERS_JSON`, `MASTER_API_KEY`, `ADMIN_DEFAULT_PASSWORD` and the `GOOGLE_PLAY_*` credentials — all `sync: false` → Render prompts for them on first sync; never stored in the repo. |
+| Secrets | `SECRET_KEY` (Render-generated via `generateValue: true`), plus `MIGRATION_DATABASE_URL`, `REDIS_URL`, `GROQ_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `AI_PROVIDERS_JSON`, `MASTER_API_KEY`, `ADMIN_BOOTSTRAP_EMAIL`, `ADMIN_BOOTSTRAP_PASSWORD` and the `GOOGLE_PLAY_*` credentials — all `sync: false` → Render prompts for them on first sync; never stored in the repo. |
 | Fixed values | `ENVIRONMENT=production`, `TRUST_PROXY_HEADERS=true`, `GOOGLE_PLAY_PACKAGE_NAME=br.com.novaiax.agente`. Full list in **[Render environment](#render-environment)**. |
 
 ### Regions
@@ -103,7 +103,7 @@ During the **initial Blueprint sync**, Render's UI asks you for a value for each
 | `MASTER_API_KEY` | `openssl rand -hex 24` (48-hex random) |
 | `GROQ_API_KEY` | your `gsk_…` key from [console.groq.com](https://console.groq.com) |
 | `REDIS_URL` | your Upstash `rediss://…` connection string (§ 4) |
-| `ADMIN_DEFAULT_PASSWORD` | a strong password — optional; a random one is logged on first boot when unset |
+| `ADMIN_BOOTSTRAP_PASSWORD` | a strong password (≥ 12 chars) — the operator account the API creates for itself |
 | `MIGRATION_DATABASE_URL` | only for Supabase: the session-pooler URL (§ 10); leave empty to reuse `DATABASE_URL` |
 | `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` (+ `GOOGLE_PLAY_PRODUCTS_JSON`, `GOOGLE_PLAY_RTDN_TOKEN`, `GOOGLE_PLAY_RTDN_AUDIENCE`) | optional — billing verification stays inert until configured |
 | `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `AI_PROVIDERS_JSON` | optional alternatives to `GROQ_API_KEY`; at least one provider key is mandatory |
@@ -148,7 +148,8 @@ feature).
 | `OPENAI_API_KEY` | Optional | `sk-…` | <https://platform.openai.com/api-keys>. |
 | `OPENROUTER_API_KEY` | Optional | `sk-or-v1-…` | <https://openrouter.ai/keys>. |
 | `AI_PROVIDERS_JSON` | Optional | `[{"name":"groq","base_url":"https://api.groq.com/openai/v1","api_key":"gsk_…","default_model":"openai/gpt-oss-120b","priority":10}]` | Your own fleet definition; replaces the individual `*_API_KEY` variables entirely (`.env.example` documents the schema). |
-| `ADMIN_DEFAULT_PASSWORD` | Optional (recommended) | a strong password | Chosen by you (`openssl rand -hex 16`).  If unset, the first admin is created with a random password printed once in the logs.  Legacy name `DEFAULT_ADMIN_PASSWORD` still works. |
+| `ADMIN_BOOTSTRAP_EMAIL` | Optional (recommended) | `ops@example.com` | The operator account the API creates for itself on the first boot (§ 9).  Render prompts for it (`sync: false`). |
+| `ADMIN_BOOTSTRAP_PASSWORD` | Optional (recommended) | a strong password | At least 12 characters and not a well-known one (`admin`, `admin123`, `password`, `12345678`, the `.env.example` placeholders) — a weak credential is refused in production and the deploy keeps running without an operator.  Chosen by you (`openssl rand -hex 16`).  The password is applied **only** when the account is created, so both variables can be removed after the first deploy. |
 | `GROQ_API_MODEL` | Optional (declared `value`) | `openai/gpt-oss-120b` | Default model when a task has no model mapping; the Groq model catalog. |
 | `GROQ_API_BASE_URL` | Optional (declared `value`) | `https://api.groq.com/openai/v1` | Groq docs — only change it if Groq moves the endpoint. |
 | `TRUST_PROXY_HEADERS` | Optional, **`true` on Render** (declared `value`) | `true` | Keep `true` only behind Render's edge proxy so `X-Forwarded-For` is trusted for rate limiting. |
@@ -162,12 +163,14 @@ feature).
 
 Other useful variables are **not** in `render.yaml` (they have safe defaults
 and can be added as `sync: false` or plain values as needed):
-`ADMIN_PANEL_ENABLED` (default `true`), `ADMIN_DEFAULT_EMAIL`
-(`admin@admin.com`), `ADMIN_REQUIRE_TOTP` (default `false`),
+`ADMIN_PANEL_ENABLED` (default `true`), `ADMIN_BOOTSTRAP_NAME`
+(default `Administrador`), `ADMIN_BOOTSTRAP_PROMOTE_EXISTING` (default
+`false`), `ADMIN_REQUIRE_TOTP` (default `false`),
 `ADMIN_TOTP_ISSUER`, `ALLOWED_ORIGINS` (CORS; unset = same-origin only),
 `DB_POOL_SIZE`/`DB_MAX_OVERFLOW`/`DB_POOL_RECYCLE_SECONDS`,
-`FIRST_USER_ADMIN`, `RUN_MIGRATIONS` (entrypoint migration switch, default
-`true`) and `PORT` (injected by Render — never set it yourself).
+`FIRST_USER_ADMIN` (forced off in production), `RUN_MIGRATIONS` (entrypoint
+migration switch, default `true`) and `PORT` (injected by Render — never set
+it yourself).
 
 > `PORT` is deliberately absent from `render.yaml`: Render picks the port for
 > Docker services and injects it as `$PORT`; `entrypoint.sh` binds uvicorn to
@@ -364,24 +367,64 @@ mutation, an append-only audit log, and an optional TOTP second factor.
 
 ### Provisioning admins (production)
 
-In production `ensure_default_admin` is a **no-op** — no admin is created or
-re-synced from env vars, and there is **no admin registration endpoint**.
-Admins are provisioned directly in the database.  Generate the SQL locally (the
-script only prints, it never connects):
+The API creates the operator account **by itself**, on every boot, from two
+environment variables (`app/db/bootstrap.py`):
+
+| Variable | Example | Purpose |
+| --- | --- | --- |
+| `ADMIN_BOOTSTRAP_EMAIL` | `ops@example.com` | Login of the operator account. |
+| `ADMIN_BOOTSTRAP_PASSWORD` | `openssl rand -hex 16` | Password — applied **only** when the account is created. |
+| `ADMIN_BOOTSTRAP_NAME` | `Administrador` | Display name of the account. |
+| `ADMIN_BOOTSTRAP_PROMOTE_EXISTING` | `false` | Promote an existing (non-admin) account with the same e-mail.  Off by default. |
+
+**First deploy**
+
+1. Set `ADMIN_BOOTSTRAP_EMAIL` and `ADMIN_BOOTSTRAP_PASSWORD` on the
+   `novaiax-gateway` service (both are `sync: false` in the Blueprint, so
+   Render asks for them on the first sync).
+2. Deploy.  The API creates the ADMIN account right after the migrations
+   (the insert is idempotent: `ON CONFLICT (email) DO NOTHING`, so several
+   workers booting at once still create exactly one account).
+3. Log in at **`/admin/login`** with those credentials.  With
+   `ADMIN_REQUIRE_TOTP=true` the account must enrol TOTP on the first login.
+4. **Remove both variables** from the service's Environment tab.  The password
+   is never re-applied — an existing account keeps its own password forever —
+   so leaving them behind only keeps a secret in the dashboard.
+
+The old `ADMIN_DEFAULT_EMAIL` / `ADMIN_DEFAULT_PASSWORD` names still work as
+deprecated aliases (they log one warning on startup); rename them.
+
+In production a malformed e-mail or a weak password (fewer than 12 characters
+or one of `admin`, `admin123`, `password`, `12345678`, the `.env.example`
+placeholders) is **refused**: the API logs the reason and keeps serving
+traffic without creating the account.  When no admin exists at all and no
+bootstrap variable is set, the API logs one warning that the panel has no
+operator.
+
+There is **no admin registration endpoint**.  To promote an account that
+already exists, generate the SQL locally (the script only prints, it never
+connects):
 
 ```bash
 python scripts/make_admin_sql.py --name "Ops" --email ops@example.com
 # prompt: ADMIN_PASSWORD env or interactive getpass
 ```
 
-Paste the emitted `UPDATE`/`INSERT … ON CONFLICT` into the Supabase SQL editor
-(or `psql`).  Every non-admin (or unknown e-mail) attempting the panel login
-gets a generic `401`, so an attacker cannot enumerate admins.
+Paste the emitted `UPDATE`/`INSERT … ON CONFLICT (email) DO NOTHING` into the
+Supabase SQL editor (or `psql`): the `UPDATE` only changes the role and the
+`INSERT` only applies the password when the account is created, so an
+existing password is never overwritten.  Every non-admin (or unknown e-mail)
+attempting the panel login gets a generic `401`, so an attacker cannot
+enumerate admins.
 
 ### Relevant environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `ADMIN_BOOTSTRAP_EMAIL` | *(unset)* | E-mail of the operator account the API creates for itself on the first boot (§ 9). |
+| `ADMIN_BOOTSTRAP_PASSWORD` | *(unset)* | Password of that account — applied **only** when the account is created (≥ 12 characters in production). |
+| `ADMIN_BOOTSTRAP_NAME` | `Administrador` | Display name of the operator account. |
+| `ADMIN_BOOTSTRAP_PROMOTE_EXISTING` | `false` | Promote an existing (non-admin) account with the same e-mail to ADMIN. |
 | `ADMIN_PANEL_ENABLED` | `true` | When `false` every `/admin` route returns `404`. |
 | `ADMIN_PANEL_COOKIE_NAME` | `novaiax_admin_panel` | Panel session cookie name (path `/admin`). |
 | `ADMIN_REQUIRE_TOTP` | `false` | Force TOTP; admins without a secret are redirected to enroll. |

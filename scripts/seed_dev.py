@@ -25,6 +25,10 @@ still works offline and never spends quota.
 
 The script is idempotent: re-running it updates the existing account instead
 of failing on the unique email constraint.
+
+The account configured in ``ADMIN_BOOTSTRAP_EMAIL`` is owned by the startup
+bootstrap (see ``app/db/bootstrap.py``): the seed never creates it and never
+re-hashes its password, so the two flows cannot fight over the same row.
 """
 
 from __future__ import annotations
@@ -208,7 +212,7 @@ async def upsert_user(email: str, full_name: str, password: str) -> tuple[User, 
         return existing, False
 
 
-async def upsert_admin(email: str, full_name: str, password: str) -> tuple[User, bool]:
+async def upsert_admin(email: str, full_name: str, password: str) -> tuple[User | None, bool]:
     """Return ``(user, created)`` for a local ADMIN account.
 
     The panel never registers administrators: an admin is a ``users`` row
@@ -216,7 +220,33 @@ async def upsert_admin(email: str, full_name: str, password: str) -> tuple[User,
     ``/admin`` and the admin-only ``/api/v1`` calls work out of the box
     (production uses ``scripts/make_admin_sql.py`` instead — see
     ``docs/ADMIN_PANEL.md``).
+
+    The account configured in ``ADMIN_BOOTSTRAP_EMAIL`` belongs to the
+    startup bootstrap (see :mod:`app.db.bootstrap`): the seed never creates
+    it and never re-hashes its password, so the two flows cannot fight over
+    the same row.  When that account does not exist yet the seed simply
+    skips it — the next API boot creates it with the configured credentials.
+
+    Returns ``(None, False)`` when the bootstrap account is not in the
+    database yet.
     """
+    bootstrap_email = (get_settings().admin_bootstrap_email or "").strip().lower()
+    if bootstrap_email and email.strip().lower() == bootstrap_email:
+        async with SessionLocal() as session:
+            existing = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
+        if existing is None:
+            logger.warning(
+                "Admin %s pertence ao bootstrap de inicialização; o seed não o cria — "
+                "a API cria a conta no próximo boot.",
+                email,
+            )
+            return None, False
+        logger.warning(
+            "Admin %s pertence ao bootstrap de inicialização; a senha não foi alterada.",
+            email,
+        )
+        return existing, False
+
     async with SessionLocal() as session:
         existing = (await session.execute(select(User).where(User.email == email))).scalar_one_or_none()
         if existing is None:
@@ -236,11 +266,14 @@ async def upsert_admin(email: str, full_name: str, password: str) -> tuple[User,
         return existing, False
 
 
-async def seed_promo_codes(admin: User) -> int:
+async def seed_promo_codes(admin: User | None) -> int:
     """Create the sample promo codes, one per redemption kind.
 
     Idempotent: an existing code keeps its settings untouched, so re-running
     the seed never resets a code someone already redeemed locally.
+
+    ``admin`` may be ``None`` when the bootstrap account does not exist yet
+    — the codes are then created without an author.
     """
     session = SessionLocal()
     created = 0
@@ -261,7 +294,7 @@ async def seed_promo_codes(admin: User) -> int:
                     per_user_limit=1,
                     active=True,
                     note=sample.note,
-                    created_by=admin.id,
+                    created_by=admin.id if admin is not None else None,
                 )
             )
             created += 1
@@ -459,8 +492,12 @@ async def seed(
         f"{support['medications']} medicamentos, {support['reports']} relatos"
     )
     print(
-        f"  admin     : {admin.email} ({'criado' if admin_created else 'atualizado'}) — "
-        "acesso ao painel em /admin"
+        "  admin     : "
+        + (
+            f"{admin.email} ({'criado' if admin_created else 'atualizado'}) — acesso ao painel em /admin"
+            if admin is not None
+            else "não criado (conta do bootstrap de inicialização — criada no próximo boot da API)"
+        )
     )
     print(f"  promo     : {promo_codes} códigos, {promotions} promoções criados")
     print()

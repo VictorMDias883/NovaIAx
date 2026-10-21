@@ -14,7 +14,7 @@ import json
 import os
 import re
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -158,7 +158,7 @@ class Settings(BaseSettings):
 
     Every field has a default value, so the application can run without any
     environment configuration.  In production, sensitive values such as
-    ``secret_key`` and ``admin_default_password`` should always be provided
+    ``secret_key`` and ``admin_bootstrap_password`` should always be provided
     via environment variables.
     """
 
@@ -291,23 +291,87 @@ class Settings(BaseSettings):
 
     # Legacy environment variable accepted for compatibility with older
     # deployments (it previously backed the default-admin password warn).
-    # Kept only so existing environments that export ``DEFAULT_ADMIN_PASSWORD``
-    # keep booting; the bootstrap and its validation now read
-    # ``admin_default_password`` below.
+    # It is the oldest spelling of the bootstrap password and is folded into
+    # ``admin_bootstrap_password`` by the alias resolver below.
     default_admin_password: str | None = Field(default_factory=lambda: os.getenv("DEFAULT_ADMIN_PASSWORD") or None)
 
-    # --- Default ADMIN bootstrap account --------------------------------------
-    # Used by :func:`app.db.bootstrap.ensure_default_admin` to create the first
-    # administrator on startup when none exists.  ``admin_default_password`` may
-    # be left unset; a strong random password is then generated and logged once
-    # at creation time so operators can retrieve it from the server logs.
-    admin_default_email: str = Field(default_factory=lambda: os.getenv("ADMIN_DEFAULT_EMAIL", "admin@admin.com"))
-    # ``DEFAULT_ADMIN_PASSWORD`` is the legacy name still present in some
-    # environments; honor it so those deployments keep using their configured
-    # password instead of silently generating a random one at first startup.
-    admin_default_password: str | None = Field(
-        default_factory=lambda: os.getenv("ADMIN_DEFAULT_PASSWORD") or os.getenv("DEFAULT_ADMIN_PASSWORD") or None
-    )
+    # --- Operator (admin) bootstrap account -----------------------------------
+    # The operator console (``/admin``) has no registration endpoint: the
+    # account is created by the API itself, on every boot, when **both**
+    # ``ADMIN_BOOTSTRAP_EMAIL`` and ``ADMIN_BOOTSTRAP_PASSWORD`` are set (see
+    # :func:`app.db.bootstrap.bootstrap_admin_account`).
+    #
+    # The password is applied **only** when the account is created — an
+    # existing account keeps its own password forever, so the variables can be
+    # removed from the environment right after the first deploy.
+    admin_bootstrap_email: str | None = None
+    admin_bootstrap_password: str | None = None
+    # Display name stored on the bootstrapped account.
+    admin_bootstrap_name: str = "Administrador"
+    # Promote an existing (non-admin) account with the same e-mail to ADMIN.
+    # Off by default: an existing account is never touched.
+    admin_bootstrap_promote_existing: bool = False
+
+    @field_validator("admin_bootstrap_promote_existing", mode="before")
+    @classmethod
+    def _coerce_promote_existing(cls, value: object) -> bool:
+        """Accept the usual truthy spellings; anything else means "off".
+
+        A typo must never crash the boot (the settings are built at import
+        time), so an unparsable value falls back to ``False`` — the safe
+        default, which leaves existing accounts untouched.
+        """
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    # Deprecated aliases of the bootstrap variables above.  They keep working
+    # (an existing deployment must not lose its operator) but they log one
+    # warning on startup — see :func:`_validate_admin_bootstrap`.
+    admin_default_email: str | None = Field(default_factory=lambda: os.getenv("ADMIN_DEFAULT_EMAIL") or None)
+    admin_default_password: str | None = Field(default_factory=lambda: os.getenv("ADMIN_DEFAULT_PASSWORD") or None)
+
+    #: Names of the deprecated variables that actually supplied a value.
+    #: Kept in a **private attribute** (and exposed read-only through
+    #: :attr:`admin_bootstrap_deprecated_env`) on purpose: a model *field*
+    #: would be read from the environment, and pydantic-settings parses such
+    #: a value as JSON — a stray ``ADMIN_BOOTSTRAP_DEPRECATED_ENV`` in the
+    #: environment would then break the boot with a parse error.
+    _admin_bootstrap_deprecated_env: list[str] = PrivateAttr(default_factory=list)
+
+    @property
+    def admin_bootstrap_deprecated_env(self) -> list[str]:
+        """Names of the deprecated variables that actually supplied a value.
+
+        Empty when the canonical ``ADMIN_BOOTSTRAP_*`` variables were used.
+        """
+        return list(self._admin_bootstrap_deprecated_env)
+
+    @model_validator(mode="after")
+    def _resolve_deprecated_admin_aliases(self) -> "Settings":
+        """Fold the deprecated ``ADMIN_DEFAULT_*`` names into the new ones.
+
+        ``ADMIN_DEFAULT_EMAIL`` / ``ADMIN_DEFAULT_PASSWORD`` (and the older
+        ``DEFAULT_ADMIN_PASSWORD``) keep working as aliases of
+        ``ADMIN_BOOTSTRAP_EMAIL`` / ``ADMIN_BOOTSTRAP_PASSWORD``.  The names
+        that were actually used are recorded in
+        :attr:`admin_bootstrap_deprecated_env` so the startup can warn once.
+        """
+        deprecated: list[str] = []
+        if not self.admin_bootstrap_email and self.admin_default_email:
+            self.admin_bootstrap_email = self.admin_default_email
+            deprecated.append("ADMIN_DEFAULT_EMAIL")
+        if not self.admin_bootstrap_password:
+            if self.admin_default_password:
+                self.admin_bootstrap_password = self.admin_default_password
+                deprecated.append("ADMIN_DEFAULT_PASSWORD")
+            elif self.default_admin_password:
+                self.admin_bootstrap_password = self.default_admin_password
+                deprecated.append("DEFAULT_ADMIN_PASSWORD")
+        self._admin_bootstrap_deprecated_env = deprecated
+        return self
 
     # --- Admin panel -----------------------------------------------------------
     # The operator console is a first-class surface, authenticated separately
@@ -586,8 +650,8 @@ class Settings(BaseSettings):
     # without running the bootstrap script.  It is **force-disabled** in
     # production (see :meth:`first_registrant_becomes_admin`) so a public
     # deployment can never hand the ADMIN role to whoever signs up first — in
-    # production the administrator comes exclusively from the bootstrap
-    # ``ADMIN_EMAIL`` / ``ADMIN_DEFAULT_PASSWORD`` settings.
+    # production the administrator comes exclusively from the startup
+    # bootstrap (``ADMIN_BOOTSTRAP_EMAIL`` / ``ADMIN_BOOTSTRAP_PASSWORD``).
     first_user_admin: bool = _env_bool("FIRST_USER_ADMIN", True)
 
     @property
@@ -752,24 +816,29 @@ class Settings(BaseSettings):
 # aware before the application starts serving traffic.
 
 
-def _validate_admin_password() -> None:
-    """Warn if the default admin bootstrap password is unset.
+def _validate_admin_bootstrap() -> None:
+    """Warn once when the deprecated admin bootstrap variables are in use.
 
-    When ``ADMIN_DEFAULT_PASSWORD`` is not provided, the bootstrap creates
-    the first administrator with a *randomly generated* password (retrievable
-    from the server logs), so this is only a reminder — not a security error.
+    ``ADMIN_DEFAULT_EMAIL`` / ``ADMIN_DEFAULT_PASSWORD`` (and the older
+    ``DEFAULT_ADMIN_PASSWORD``) still work as aliases of the canonical
+    ``ADMIN_BOOTSTRAP_EMAIL`` / ``ADMIN_BOOTSTRAP_PASSWORD``, but they are
+    deprecated: one warning is emitted at startup so the operator can rename
+    them.  Only the *names* of the variables are logged — never a password,
+    never a hash.
     """
+    settings = get_settings()
+    deprecated = settings.admin_bootstrap_deprecated_env
+    if not deprecated:
+        return
+
     from app.core.logging import get_logger
 
-    settings = get_settings()
-    if not settings.admin_default_password:
-        logger = get_logger(__name__)
-        logger.warning(
-            "ADMIN_DEFAULT_PASSWORD is not set - the first admin will be "
-            "created with a random password.  Check the server logs on first "
-            "startup to retrieve it, or set ADMIN_DEFAULT_PASSWORD in "
-            "production to control the initial administrator password.",
-        )
+    logger = get_logger(__name__)
+    logger.warning(
+        "Deprecated admin bootstrap environment variable(s) in use: %s — rename them to "
+        "ADMIN_BOOTSTRAP_EMAIL / ADMIN_BOOTSTRAP_PASSWORD.",
+        ", ".join(deprecated),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -880,7 +949,7 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = Settings()
-        _validate_admin_password()
+        _validate_admin_bootstrap()
         _validate_master_api_key_visibility()
         _validate_production_secrets()
     return _settings
