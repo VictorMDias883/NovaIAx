@@ -62,6 +62,15 @@ router = APIRouter(prefix="/community", tags=["community"])
 _ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png"}
 
 
+async def _read_bounded_upload(file: UploadFile, max_bytes: int) -> bytes:
+    """Read at most one byte beyond the configured cap before rejecting."""
+    limit = max(0, max_bytes)
+    raw = await file.read(limit + 1)
+    if len(raw) > limit:
+        raise HTTPException(status_code=413, detail="Imagem muito grande")
+    return raw
+
+
 # ---------------------------------------------------------------------------
 # Support (read-only)
 # ---------------------------------------------------------------------------
@@ -155,11 +164,13 @@ async def upload_report_photo(
     settings = get_settings()
     if file.content_type not in _ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=415, detail="Envie uma imagem JPEG ou PNG")
-    raw = await file.read()
+    raw = await _read_bounded_upload(file, settings.community_max_upload_bytes)
     if not raw:
         raise HTTPException(status_code=422, detail="Arquivo vazio")
-    if len(raw) > settings.community_max_upload_bytes:
-        raise HTTPException(status_code=413, detail="Imagem muito grande")
+    if file.content_type == "image/jpeg" and not raw.startswith(b"\xff\xd8"):
+        raise HTTPException(status_code=415, detail="Arquivo não corresponde a uma imagem JPEG")
+    if file.content_type == "image/png" and not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(status_code=415, detail="Arquivo não corresponde a uma imagem PNG")
     cleaned = strip_metadata(raw)
     suffix = ".png" if file.content_type == "image/png" else ".jpg"
     media_dir = Path(settings.community_media_dir)

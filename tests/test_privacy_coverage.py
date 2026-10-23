@@ -14,8 +14,10 @@ tests seed one row per module (plus a community photo file on disk), then:
 
 import asyncio
 from datetime import UTC, date, datetime
+from io import BytesIO
 
 import pytest
+from app.api.v1.community_router import _read_bounded_upload
 from app.db.session import SessionLocal
 from app.main import app
 from app.models.community import (
@@ -32,8 +34,10 @@ from app.models.health import IntakeStatus, Medication, MedicationIntake
 from app.models.logbook import LogEntry, LogKind
 from app.models.study import Flashcard, FlashcardDeck, FlashcardReview, StudyPlan
 from app.models.user import User, UserRole
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
+from starlette.datastructures import UploadFile
 
 from tests.helpers import force_memory_redis
 
@@ -45,6 +49,15 @@ _REGISTER = {
     "password": _PASSWORD,
     "birth_date": "1990-01-01",
 }
+
+
+def test_upload_reader_rejects_oversize_without_reading_full_file() -> None:
+    upload = UploadFile(file=BytesIO(b"x" * 100))
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(_read_bounded_upload(upload, 8))
+
+    assert error.value.status_code == 413
 
 
 @pytest.fixture
