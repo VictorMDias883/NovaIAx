@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from jose import jwt
+import jwt
 from passlib.context import CryptContext
 
 from app.cache.redis_client import RedisClient
@@ -156,7 +156,12 @@ def claim_int(payload: dict[str, Any], name: str) -> int | None:
 # PBKDF2 with SHA-256, which is built into Python's standard library
 # (no external C dependencies).  The ``deprecated="auto"`` flag tells
 # passlib to automatically upgrade hashes that use older schemes.
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256"],
+    deprecated="auto",
+    pbkdf2_sha256__min_rounds=600_000,
+    pbkdf2_sha256__default_rounds=600_000,
+)
 
 
 # ---------------------------------------------------------------------------

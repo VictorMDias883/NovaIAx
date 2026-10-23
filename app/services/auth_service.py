@@ -165,7 +165,7 @@ class AuthService:
         except IntegrityError as exc:
             if not _is_unique_violation(exc):
                 raise
-            logger.info("Rejected a duplicate registration for %s (unique constraint)", command.email)
+            logger.info("Rejected duplicate registration (unique constraint)")
             raise HTTPException(status_code=409, detail="Usuário já existe.") from exc
 
         return {
@@ -322,7 +322,7 @@ class AuthService:
         user = await repo.get_by_email(command.email)
         if not user or not pwd_context.verify(command.password, user.password_hash):
             await self.login_rate_limiter.on_failure(command.email, client_ip)
-            logger.info("Failed login attempt for %s", command.email)
+            logger.info("Failed login attempt")
             raise APIError(401, "Credenciais inválidas.", code=APIErrorCode.INVALID_CREDENTIALS)
 
         if user.suspended_at is not None:
@@ -336,6 +336,9 @@ class AuthService:
                 await suspended_detail(self.session),
                 code=APIErrorCode.ACCOUNT_SUSPENDED,
             )
+
+        if pwd_context.needs_update(user.password_hash):
+            user.password_hash = pwd_context.hash(command.password)
 
         await self.login_rate_limiter.on_success(command.email, client_ip)
         # Record the login for the admin console's user detail page.  This is

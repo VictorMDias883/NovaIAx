@@ -23,7 +23,7 @@ from app.api.deps import get_current_user
 from app.commands.register_user_command import RegisterUserCommand
 from app.core.config import Settings
 from app.core.security import ApiKeyService, claim_int, coerce_int, create_access_token
-from app.db.session import Base
+from app.db.session import Base, SessionLocal
 from app.models.user import User
 from app.schemas.auth import LoginRequest
 from app.services.auth_service import AuthService, _is_unique_violation
@@ -130,6 +130,40 @@ def test_only_unique_violations_are_treated_as_conflicts() -> None:
     assert not _is_unique_violation(foreign_key)
 
 
+def test_password_hashes_use_current_rounds_and_legacy_hashes_need_upgrade() -> None:
+    from app.cache.redis_client import RedisClient
+    from app.commands.login_command import LoginCommand
+    from app.core.config import Settings
+    from app.core.security import pwd_context
+    from app.services.auth_service import AuthService
+
+    password = "S3cure-Test-Password!"
+    old_hash = pwd_context.handler("pbkdf2_sha256").using(rounds=29_000).hash(password)
+    new_hash = pwd_context.hash(password)
+
+    assert pwd_context.verify(password, old_hash)
+    assert pwd_context.needs_update(old_hash)
+    assert pwd_context.verify(password, new_hash)
+    assert not pwd_context.needs_update(new_hash)
+    assert "$600000$" in new_hash
+
+    async def scenario(session) -> None:
+        user = User(full_name="Legacy", email="legacy-hash@example.com", password_hash=old_hash)
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        settings = Settings(
+            secret_key="test-secret-key-that-is-long-enough-for-hs256",
+            redis_url="redis://127.0.0.1:1/0",
+        )
+        service = AuthService(session, redis_client=RedisClient(settings), settings=settings)
+        await service.login(LoginCommand(email=user.email, password=password), client_ip="127.0.0.1")
+        await session.refresh(user)
+        assert not pwd_context.needs_update(user.password_hash)
+
+    asyncio.run(_run(scenario))
+
+
 def test_session_is_usable_after_a_rejected_duplicate() -> None:
     """A rejected registration must not leave the session in a bad state."""
     from fastapi import HTTPException
@@ -210,8 +244,8 @@ def test_coerce_int_accepts_only_whole_numbers(payload, claim, expected) -> None
 
 def test_refresh_rejects_a_non_numeric_subject_with_401() -> None:
     """A tampered ``sub`` must be rejected cleanly, not crash with 500."""
+    import jwt
     from fastapi import HTTPException
-    from jose import jwt
 
     async def scenario(session) -> None:
         service = AuthService(session)
@@ -243,8 +277,8 @@ def test_refresh_rejects_a_non_numeric_subject_with_401() -> None:
 
 def test_refresh_rejects_a_non_numeric_exp_with_401() -> None:
     """A malformed ``exp`` must not reach ``int()`` unguarded."""
+    import jwt
     from fastapi import HTTPException
-    from jose import jwt
 
     async def scenario(session) -> None:
         user = User(
@@ -401,29 +435,40 @@ def test_identity_resolved_once_is_reused(monkeypatch) -> None:
     import app.api.deps as deps
 
     original_decode = deps.decode_token
-    deps.decode_token = lambda token, *a, **k: {  # type: ignore[assignment]
-        "sub": "1",
-        "type": "access",
-        "role": "USER",
-    }
-
     async def scenario() -> None:
-        request = _FakeRequest({"Authorization": "Bearer whatever"})
-        first = await get_current_user(
-            request=request,
-            api_key_service=ApiKeyService(settings=Settings(master_api_key="")),
-            session=None,
-            denylist=None,
-        )
-        assert loads == [1]
-        second = await get_current_user(
-            request=request,
-            api_key_service=ApiKeyService(settings=Settings(master_api_key="")),
-            session=None,
-            denylist=None,
-        )
-        assert first == second
-        assert loads == [1], "the user must be loaded once per request"
+        async with SessionLocal() as session:
+            user = User(full_name="Identity Cache", email="identity-cache@example.com", password_hash="unused")
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+            user_id = user.id
+
+        deps.decode_token = lambda token, *a, **k: {  # type: ignore[assignment]
+            "sub": str(user_id),
+            "type": "access",
+            "role": "USER",
+        }
+        try:
+            request = _FakeRequest({"Authorization": "Bearer whatever"})
+            first = await get_current_user(
+                request=request,
+                api_key_service=ApiKeyService(settings=Settings(master_api_key="")),
+                session=None,
+                denylist=None,
+            )
+            assert loads == [user_id]
+            second = await get_current_user(
+                request=request,
+                api_key_service=ApiKeyService(settings=Settings(master_api_key="")),
+                session=None,
+                denylist=None,
+            )
+            assert first == second
+            assert loads == [user_id], "the user must be loaded once per request"
+        finally:
+            async with SessionLocal() as session:
+                await session.delete(await session.get(User, user_id))
+                await session.commit()
 
     try:
         asyncio.run(scenario())

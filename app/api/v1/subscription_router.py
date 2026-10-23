@@ -15,8 +15,8 @@ import time
 from typing import Any
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
-from jose import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_google_play_client, get_session, require_db_user
@@ -100,9 +100,12 @@ async def _verify_oidc_token(token: str, audience: str) -> bool:
             return False
         _jwks_cache = (now, response.json())
     try:
+        key_id = jwt.get_unverified_header(token).get("kid")
+        jwks = jwt.PyJWKSet.from_dict(_jwks_cache[1])
+        signing_key = next(key.key for key in jwks.keys if key.key_id == key_id)
         jwt.decode(
             token,
-            _jwks_cache[1],
+            signing_key,
             algorithms=["RS256"],
             audience=audience,
             issuer=list(_GOOGLE_ISSUERS),

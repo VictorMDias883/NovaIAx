@@ -9,7 +9,7 @@ decides entitlement, and only from this answer.
 
 The deployment intentionally carries **no** ``google-*`` dependency: the
 service-account access token is minted here with a hand-built RS256 JWT
-(:mod:`jose`) exchanged over HTTPS (:mod:`httpx`), and the two API calls this
+(:mod:`jwt`) exchanged over HTTPS (:mod:`httpx`), and the two API calls this
 project needs (``subscriptionsv2.get`` and ``subscriptions.acknowledge``) are
 plain REST.  Tests replace :func:`app.api.deps.get_google_play_client` with an
 in-memory fake, so nothing here runs in the test suite.
@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
-from jose import jwt
+import jwt
 
 from app.core.config import Settings
 from app.core.logging import get_logger

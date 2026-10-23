@@ -888,8 +888,14 @@ def _validate_production_secrets() -> None:
         return
     if settings.secret_key == "change-me-in-production":
         raise RuntimeError("SECRET_KEY must be set to a strong, non-default value when ENVIRONMENT=production.")
+    if len(settings.secret_key.encode("utf-8")) < 32:
+        raise RuntimeError("SECRET_KEY must contain at least 32 bytes when ENVIRONMENT=production.")
+    if settings.minimum_account_age_years < 18:
+        raise RuntimeError("MINIMUM_ACCOUNT_AGE_YEARS cannot be lower than 18 in production.")
     if not settings.master_api_key or settings.master_api_key in _PLACEHOLDER_VALUES:
         raise RuntimeError("MASTER_API_KEY must be set to a strong, non-placeholder value when ENVIRONMENT=production.")
+    if len(settings.master_api_key.encode("utf-8")) < 32:
+        raise RuntimeError("MASTER_API_KEY must contain at least 32 bytes when ENVIRONMENT=production.")
     has_ai_provider = any(
         (
             settings.groq_api_key,

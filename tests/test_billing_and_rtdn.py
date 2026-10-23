@@ -10,7 +10,9 @@ Covers:
 """
 
 import asyncio
+import time
 
+import jwt
 import pytest
 from app.api.v1 import subscription_router
 from app.core.config import Settings, _validate_production_secrets, get_settings
@@ -47,6 +49,27 @@ def test_production_accepts_a_valid_package_name(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("app.core.config._settings", settings, raising=False)
     # Should not raise.
     _validate_production_secrets()
+
+
+def test_production_rejects_a_short_jwt_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _prod_settings(secret_key="too-short")
+    monkeypatch.setattr("app.core.config._settings", settings, raising=False)
+    with pytest.raises(RuntimeError, match="SECRET_KEY must contain at least 32 bytes"):
+        _validate_production_secrets()
+
+
+def test_production_rejects_a_short_master_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _prod_settings(master_api_key="too-short")
+    monkeypatch.setattr("app.core.config._settings", settings, raising=False)
+    with pytest.raises(RuntimeError, match="MASTER_API_KEY must contain at least 32 bytes"):
+        _validate_production_secrets()
+
+
+def test_production_rejects_an_age_gate_below_18(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _prod_settings(minimum_account_age_years=17)
+    monkeypatch.setattr("app.core.config._settings", settings, raising=False)
+    with pytest.raises(RuntimeError, match="MINIMUM_ACCOUNT_AGE_YEARS"):
+        _validate_production_secrets()
 
 
 @pytest.mark.parametrize("bad", ["", "not a package", "com.novaiax.", ".com.novaiax"])
@@ -111,3 +134,21 @@ def test_rtdn_is_closed_when_not_configured(monkeypatch: pytest.MonkeyPatch) -> 
 
     with pytest.raises(PlanRequiredError):
         asyncio.run(subscription_router._authorize_rtdn(_request()))
+
+
+def test_oidc_verification_selects_matching_jwks_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    jwk = jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    jwk.update({"kid": "test-key", "alg": "RS256", "use": "sig"})
+    monkeypatch.setattr(subscription_router, "_jwks_cache", (time.time(), {"keys": [jwk]}))
+    token = jwt.encode(
+        {"iss": "https://accounts.google.com", "aud": "novaiax-rtdn", "sub": "test", "exp": int(time.time()) + 60},
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+
+    assert asyncio.run(subscription_router._verify_oidc_token(token, "novaiax-rtdn"))
+    assert not asyncio.run(subscription_router._verify_oidc_token(token, "wrong-audience"))
