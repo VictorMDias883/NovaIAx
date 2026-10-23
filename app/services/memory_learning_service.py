@@ -6,8 +6,8 @@ Learned memories come with three hard guards (all three are satisfied here):
 1. **Explicit statements only** — the statement must be a first-person,
    non-interrogative, affirmative sentence ("Eu moro em ...", "Eu trabalho
    com ..."), so a mood or a passing question is never turned into a fact.
-2. **Only when learning is enabled** — the toggler reads the user's
-   :class:`~app.models.user_agent.UserAgent.learning_enabled` flag.
+2. **Only with explicit consent and when learning is enabled** — the service
+    checks the user's active ``learning`` consent and profile toggle.
 3. **Sensitive topics are never stored** unless the user explicitly asks to
    save them — health, religion, sexual orientation, politics and finances
    statements are dropped unless the statement itself asks the assistant to
@@ -23,8 +23,10 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.consent import ConsentRecord
 from app.models.user_memory import UserMemory
 from app.repositories.user_agent_repository import UserAgentRepository
 from app.repositories.user_memory_repository import UserMemoryRepository
@@ -302,14 +304,23 @@ class MemoryLearningService:
     async def learn_from_statement(self, user_id: int, statement: str) -> list[UserMemory]:
         """Persist learned memories from ``statement`` (best-effort).
 
-        No-op when ``statement`` is empty, when the user's profile disables
-        learning, or when the statement is not an explicit, non-sensitive
-        (or explicitly-to-be-saved) first-person fact.  The profile row is
-        created lazily with default settings when it does not exist yet.
+        No-op when ``statement`` is empty, the user has not granted the
+        ``learning`` consent, the profile disables learning, or the statement
+        is not an explicit, non-sensitive (or explicitly-to-be-saved)
+        first-person fact. The profile row is created lazily when needed.
 
         Returns the saved/refreshed :class:`UserMemory` rows.
         """
         if not statement or not statement.strip():
+            return []
+
+        consent = await self.session.execute(
+            select(ConsentRecord.id).where(
+                ConsentRecord.user_id == user_id,
+                ConsentRecord.type == "learning",
+            )
+        )
+        if consent.scalar_one_or_none() is None:
             return []
 
         profile, _ = await self.profile_repo.get_or_create(user_id)

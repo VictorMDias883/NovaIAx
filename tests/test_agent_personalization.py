@@ -490,6 +490,9 @@ def test_learning_service_respects_the_toggle() -> None:
 
 def test_learning_service_saves_explicit_statements() -> None:
     async def scenario(session, user_id: int) -> None:
+        from app.services.privacy_service import ConsentService
+
+        await ConsentService(session).record(user_id, "learning")
         learner = MemoryLearningService(session)
         saved = await learner.learn_from_statement(user_id, "Eu moro em Lisboa.")
         assert len(saved) == 1
@@ -683,11 +686,41 @@ def test_prompt_builder_merges_groups_sub_agents_and_memories_untrusted() -> Non
 
 def test_auto_learning_flows_into_the_prompt() -> None:
     async def scenario(session, user_id: int) -> None:
+        from app.services.privacy_service import ConsentService
+
+        await ConsentService(session).record(user_id, "learning")
         learner = MemoryLearningService(session)
         await learner.learn_from_statement(user_id, "Eu moro em Lisboa desde 2020.")
 
         ctx = await load_personalization_context(session, user_id)
         assert ctx is not None
         assert any("auto_moro" in memory.key for memory in ctx.memories)
+
+    asyncio.run(_run_real_db(scenario))
+
+
+def test_learning_requires_and_stops_withdrawn_consent() -> None:
+    async def scenario(session, user_id: int) -> None:
+        from app.models.consent import ConsentRecord
+        from app.models.user_agent import UserAgent
+        from app.services.privacy_service import ConsentService
+        from sqlalchemy import select
+
+        learner = MemoryLearningService(session)
+        assert await learner.learn_from_statement(user_id, "Eu moro em Lisboa.") == []
+
+        await ConsentService(session).record(user_id, "learning")
+        assert len(await learner.learn_from_statement(user_id, "Eu moro em Lisboa.")) == 1
+
+        assert await ConsentService(session).withdraw(user_id, "learning")
+        assert await learner.learn_from_statement(user_id, "Eu trabalho em Recife.") == []
+        profile = (
+            await session.execute(select(UserAgent).where(UserAgent.user_id == user_id))
+        ).scalar_one_or_none()
+        assert profile is not None and profile.learning_enabled is False
+        consent = await session.execute(
+            select(ConsentRecord).where(ConsentRecord.user_id == user_id, ConsentRecord.type == "learning")
+        )
+        assert consent.scalar_one_or_none() is None
 
     asyncio.run(_run_real_db(scenario))
