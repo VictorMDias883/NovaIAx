@@ -100,7 +100,7 @@ During the **initial Blueprint sync**, Render's UI asks you for a value for each
 
 | Secret | Value |
 | --- | --- |
-| `MASTER_API_KEY` | `openssl rand -hex 24` (48-hex random) |
+| `MASTER_API_KEY` | `openssl rand -hex 32` (64-hex random; required minimum is 32 bytes) |
 | `GROQ_API_KEY` | your `gsk_…` key from [console.groq.com](https://console.groq.com) |
 | `REDIS_URL` | your Upstash `rediss://…` connection string (§ 4) |
 | `ADMIN_BOOTSTRAP_PASSWORD` | a strong password (≥ 12 chars) — the operator account the API creates for itself |
