@@ -33,9 +33,11 @@ import json
 import os
 import secrets
 import string
+import subprocess
 import sys
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 try:
@@ -488,6 +490,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    public_check = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("check_public_access.py")), args.base_url],
+        check=False,
+    )
+    if public_check.returncode:
+        return public_check.returncode
+
     password = args.password or os.getenv("SMOKE_PASSWORD") or generate_password()
 
     runner = Runner(args.base_url, args.email, password, args.timeout)

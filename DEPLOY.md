@@ -300,6 +300,17 @@ curl -s https://novaiax-gateway.onrender.com/health
 
 Swagger UI is served at `/docs`, e.g. `https://novaiax-gateway.onrender.com/docs`.
 
+**After every deploy, run the public-access diagnostic** against the deployed
+URL before releasing the Flutter client:
+
+```bash
+python scripts/check_public_access.py https://novaiax-gateway.onrender.com
+```
+
+It verifies the public endpoints with and without a garbage Bearer header,
+checks the auth error codes and a protected route, and confirms trailing-slash
+requests do not redirect. A non-zero exit means the deploy is not ready.
+
 > The actual subdomain appears in the dashboard (Render may suffix the name if
 > `novaiax-gateway` is taken).  Replace it in the commands above.
 
