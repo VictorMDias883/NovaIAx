@@ -583,10 +583,14 @@ Purchase verification failure → `400 purchase_invalid`. Billing not configured
 
 - Consent `type` ∈ `terms, privacy, microphone, contacts, location, learning`.
   Registration auto-records `terms` and `privacy` with the configured versions.
+- Automatic memory learning requires an active `learning` consent as well as
+  `learning_enabled=true` in the agent profile. Withdrawing `learning` disables
+  that profile toggle and prevents further auto-learning.
 - `PUT /me/consents` with an unknown `type` → `422`; `DELETE` unknown → `404`.
 - `GET /me/export` returns a `DataExportResponse` (`schema_version`,
-  `generated_at`, `user`, `consents`, `objectives`, `memories`, `agent_actions`,
-  `ai_feedback`, `subscription`, `purchase_events`, `productivity`, `health`
+  `generated_at`, `user`, `consents`, `consent_history`, `objectives`,
+  `memories`, `agent_actions`, `ai_feedback`, `chat_messages`, `conversations`,
+  `promo_redemptions`, `subscription`, `purchase_events`, `productivity`, `health`
   (medications + intakes), `finance` (expenses/incomes/bills/budgets), `study`
   (plans/decks/cards/reviews), `logbook` (entries) and `community` (own
   reports/confirmations/flags, plus support content read-only), and

@@ -12242,6 +12242,14 @@
             "type": "array",
             "title": "Consents"
           },
+          "consent_history": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Consent History"
+          },
           "objectives": {
             "items": {
               "additionalProperties": true,
@@ -12283,6 +12291,35 @@
             },
             "type": "array",
             "title": "Ai Feedback"
+          },
+          "chat_messages": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Chat Messages"
+          },
+          "conversations": {
+            "additionalProperties": {
+              "items": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Conversations"
+          },
+          "promo_redemptions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Promo Redemptions"
           },
           "subscription": {
             "anyOf": [
@@ -12384,10 +12421,14 @@
           "generated_at",
           "user",
           "consents",
+          "consent_history",
           "objectives",
           "memories",
           "agent_actions",
           "ai_feedback",
+          "chat_messages",
+          "conversations",
+          "promo_redemptions",
           "purchase_events",
           "productivity",
           "health",
