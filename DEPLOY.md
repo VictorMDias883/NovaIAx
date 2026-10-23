@@ -140,7 +140,7 @@ feature).
 | `ENVIRONMENT` | **Required** (declared `value`) | `production` | Set to `production` only on Render; it turns on the hard boot-time validators. |
 | `DATABASE_URL` | **Required** (auto-injected) | `postgresql://novaiax:…@hostname:5432/renderdb` | Render fills it from the managed Postgres via `fromDatabase` (§ 0). With Supabase instead, replace the entry with `sync: false` and paste the **pooled** URL (transaction pooler `6543` is fine — the app sets `statement_cache_size=0`). |
 | `SECRET_KEY` | **Required** (generated) | `9f4c…` (64 hex) | Render generates it on first Blueprint sync (`generateValue: true`); rotate with `openssl rand -hex 32` on the service's **Environment** tab. |
-| `MASTER_API_KEY` | **Required** | `a71f…` (48 hex) | `openssl rand -hex 24` — any request carrying it is fully trusted, so keep it out of clients. |
+| `MASTER_API_KEY` | **Required** | `a71f…` (64 hex) | `openssl rand -hex 32` — any request carrying it is fully trusted, so keep it out of clients. |
 | `GROQ_API_KEY` | **Required** (unless another provider key is set) | `gsk_…` | <https://console.groq.com> → API Keys.  At least one of `GROQ_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `AI_PROVIDERS_JSON` must exist. |
 | `REDIS_URL` | **Required** | `rediss://default:…@va1-xyz.upstash.io:6379` | Upstash console → database → *Connect* (§ 4). |
 | `GOOGLE_PLAY_PACKAGE_NAME` | **Required** (declared `value`) | `br.com.novaiax.agente` | Play Console → *Setup → Advanced → App details* (the Android application id). Must stay a valid package name or the app refuses to boot in production. |
@@ -526,6 +526,7 @@ nothing changed).
 | Deploy crashes with *The SQLAlchemy asyncio module requires that the Python greenlet library is installed*, then Render reports **“No open ports detected”** | The image lacks `greenlet`/`sqlalchemy[asyncio]` — `requirements.txt` must list both (they are runtime deps in `requirements.txt` **and** `pyproject.toml`). uvicorn never starts because the entrypoint exits on the failed migration, so the service has no listening port. |
 | First request after idle is slow / times out | Free-tier cold start (~30–60 s). Raise the Flutter client timeout to ≥ 60–90 s or upgrade to a paid plan (§ 7). |
 | 401 on everything including `/health` | `/health` is exempt; if other routes 401, check `SECRET_KEY`/token configuration. |
-| `SECRET_KEY must be set…Raises RuntimeError` | `ENVIRONMENT=production` + placeholder `SECRET_KEY`. Rotate it in the Env/Secrets tab and redeploy. |
+| `SECRET_KEY must be set…` or `SECRET_KEY must contain at least 32 bytes…` | `ENVIRONMENT=production` requires a non-placeholder `SECRET_KEY` of at least 32 bytes. Set it in the service's **Environment** tab (for example, generate with `openssl rand -hex 32`) and redeploy. Blueprint `generateValue` does not replace an existing service value. |
+| `MASTER_API_KEY must contain at least 32 bytes…` | Generate a key with `openssl rand -hex 32`, set it in the service's **Environment** tab, and redeploy. |
 | Secret added in dashboard not taking effect | `sync: false` values are only prompted on *initial* Blueprint sync; edit them directly on the service's **Environment** page, then redeploy. |
 | Commit to `main` doesn't deploy | Check **Auto-Deploy** on the service (Blueprint sets `commit`), and that the Blueprint repo/branch match. |
