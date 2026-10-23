@@ -10,13 +10,14 @@ Covers:
    and matching/non-matching still behave correctly.
 4. **Login password length cap** — an over-long password is rejected by
    validation, before any hashing work.
-5. **Request-scoped identity reuse** — the middleware and the dependency
-   share one authentication, so a protected request loads the user once.
-6. **``/redoc`` is public** — like ``/docs``, it needs no credentials.
+5. **Request-scoped identity reuse** — dependency paths share one authentication.
+6. **Explicit route authorization** — public routes ignore Bearer headers and
+    every protected API operation rejects missing credentials.
 """
 
 import asyncio
 from datetime import date
+from uuid import uuid4
 
 import pytest
 from app.api.deps import get_current_user
@@ -570,6 +571,313 @@ def test_protected_route_requires_authentication() -> None:
 
     assert response.status_code == 401
     assert response.json()["code"] == "authentication_required"
+
+
+PUBLIC_ROUTES = {
+    ("GET", "/"),
+    ("GET", "/health"),
+    ("HEAD", "/health"),
+    ("GET", "/api/v1/app-config"),
+    ("POST", "/api/v1/auth/register"),
+    ("POST", "/api/v1/auth/login"),
+    ("POST", "/api/v1/auth/refresh"),
+    ("POST", "/api/v1/auth/logout"),
+    ("GET", "/privacy"),
+    ("GET", "/terms"),
+    ("GET", "/account-deletion"),
+    ("POST", "/account-deletion/request"),
+    ("POST", "/api/v1/billing/google/rtdn"),
+    ("GET", "/docs"),
+    ("GET", "/docs/oauth2-redirect"),
+    ("GET", "/redoc"),
+    ("GET", "/openapi.json"),
+    ("GET", "/admin/login"),
+    ("POST", "/admin/login"),
+}
+
+
+def test_every_registered_operation_is_classified_and_auth_guarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enumerate OpenAPI operations; the admin panel is separately cookie-authenticated."""
+    import re
+
+    from fastapi.testclient import TestClient
+
+    from app.api.v1 import subscription_router
+    from app.main import app
+    from app.middlewares.rate_limit_middleware import RateLimitMiddleware
+
+    async def pass_rate_limit(self, request, call_next):  # noqa: ANN001
+        return await call_next(request)
+
+    async def allow_rtdn(request) -> None:  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(RateLimitMiddleware, "dispatch", pass_rate_limit)
+    monkeypatch.setattr(subscription_router, "_authorize_rtdn", allow_rtdn)
+    monkeypatch.setattr(app, "middleware_stack", None)
+
+    operations = {
+        (method.upper(), path)
+        for path, path_item in app.openapi()["paths"].items()
+        for method in path_item
+        if method in {"get", "post", "put", "patch", "delete", "options", "head"}
+    }
+    assert PUBLIC_ROUTES - operations == {
+        ("HEAD", "/health"),
+        ("GET", "/docs"),
+        ("GET", "/docs/oauth2-redirect"),
+        ("GET", "/redoc"),
+        ("GET", "/openapi.json"),
+    }
+
+    def request_public(client, method: str, path: str, headers: dict[str, str]):  # noqa: ANN001
+        logical_path = path.rstrip("/") or "/"
+        if logical_path == "/admin/login" and method == "POST":
+            client.get("/admin/login")
+            return client.post(
+                path,
+                data={
+                    "email": "missing@example.invalid",
+                    "password": "wrong-password",
+                    "csrf_token": client.cookies.get("novaiax_admin_login_csrf", ""),
+                },
+                headers=headers,
+            )
+        if logical_path == "/account-deletion/request":
+            client.get("/account-deletion")
+            return client.post(
+                path,
+                data={
+                    "email": "missing@example.invalid",
+                    "password": "wrong-password",
+                    "csrf_token": client.cookies.get("novaiax_public_csrf", ""),
+                },
+                headers=headers,
+            )
+        return client.request(method, path, json={} if method in {"POST", "PUT", "PATCH"} else None, headers=headers)
+
+    with TestClient(app, follow_redirects=False) as client:
+        for method, path in sorted(PUBLIC_ROUTES):
+            if (method, path) == ("HEAD", "/health"):
+                continue
+            responses = [request_public(client, method, path, headers) for headers in ({}, {"Authorization": "Bearer garbage"})]
+            if (method, path) == ("POST", "/admin/login"):
+                assert responses[0].status_code == responses[1].status_code
+            else:
+                for response in responses:
+                    assert response.status_code not in {401, 403}, (method, path, response.status_code, response.text)
+            if path != "/":
+                slash_variant = path[:-1] if path.endswith("/") else f"{path}/"
+                canonical = request_public(client, method, path, {})
+                slashed = request_public(client, method, slash_variant, {})
+                assert slashed.status_code == canonical.status_code, (method, path, slash_variant)
+                assert not 300 <= slashed.status_code < 400
+
+        static_response = client.get("/admin/static/no-such-file.css", headers={"Authorization": "Bearer garbage"})
+        assert static_response.status_code == 404
+
+        preflight = client.options(
+            "/api/v1/objectives/",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+                "Authorization": "Bearer garbage",
+            },
+        )
+        assert preflight.status_code not in {401, 403}
+
+        for method, path in sorted(operations - PUBLIC_ROUTES):
+            concrete_path = re.sub(r"\{[^}]+\}", "1", path)
+            if path.startswith("/admin/"):
+                response = client.request(
+                    method,
+                    concrete_path,
+                    json={} if method in {"POST", "PUT", "PATCH"} else None,
+                    headers={"X-Forwarded-Proto": "https", "Authorization": "Bearer garbage"},
+                )
+                assert response.status_code not in {401, 403}
+                assert not response.headers.get("location", "").startswith("http://")
+                continue
+
+            headers = {"X-Forwarded-Proto": "https"}
+            response = client.request(
+                method,
+                concrete_path,
+                json={} if method in {"POST", "PUT", "PATCH"} else None,
+                headers=headers,
+            )
+            assert response.status_code == 401, (method, path, response.status_code, response.text)
+            assert response.json()["code"] == "authentication_required"
+            assert not 300 <= response.status_code < 400
+            assert not response.headers.get("location", "").startswith("http://")
+
+            garbage = client.request(
+                method,
+                concrete_path,
+                json={} if method in {"POST", "PUT", "PATCH"} else None,
+                headers={**headers, "Authorization": "Bearer garbage"},
+            )
+            assert garbage.status_code == 401
+            assert garbage.json()["code"] == "authentication_required"
+
+            if concrete_path != "/":
+                slash_variant = concrete_path[:-1] if concrete_path.endswith("/") else f"{concrete_path}/"
+                slash_response = client.request(
+                    method,
+                    slash_variant,
+                    json={} if method in {"POST", "PUT", "PATCH"} else None,
+                    headers=headers,
+                )
+                assert slash_response.status_code == response.status_code, (method, path, slash_variant)
+                assert not 300 <= slash_response.status_code < 400
+                assert not slash_response.headers.get("location", "").startswith("http://")
+
+        for headers in ({}, {"Authorization": "Bearer garbage"}):
+            head_health = client.head("/health", headers=headers)
+            assert head_health.status_code not in {401, 403}
+
+
+def test_public_auth_flow_ignores_authorization_header() -> None:
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    email = f"public-auth-{uuid4().hex}@example.com"
+    payload = {
+        "full_name": "Public Auth",
+        "email": email,
+        "password": "Password123",
+        "birth_date": "1990-01-01",
+    }
+    with TestClient(app) as test_client:
+        registered = test_client.post("/api/v1/auth/register", json=payload, headers={"Authorization": "Bearer garbage"})
+        assert registered.status_code == 201, registered.text
+        login = test_client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": "Password123"},
+            headers={"Authorization": "Bearer garbage"},
+        )
+        assert login.status_code == 200
+        assert test_client.get("/api/v1/app-config", headers={"Authorization": "Bearer garbage"}).status_code == 200
+
+        import time
+        import jwt
+
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        expired_token = jwt.encode(
+            {"sub": "1", "type": "access", "iat": int(time.time()) - 120, "exp": int(time.time()) - 60},
+            settings.secret_key,
+            algorithm=settings.jwt_algorithm,
+        )
+        for authorization in (f"Bearer {expired_token}", "malformed"):
+            public_config = test_client.get("/api/v1/app-config", headers={"Authorization": authorization})
+            assert public_config.status_code == 200
+
+        wrong_password = test_client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": "WrongPassword123"},
+            headers={"Authorization": "Bearer garbage"},
+        )
+        assert wrong_password.status_code == 401
+        assert wrong_password.json()["code"] == "invalid_credentials"
+
+        refreshed = test_client.post(
+            "/api/v1/auth/refresh",
+            json={"refresh_token": login.json()["refresh_token"]},
+            headers={"Authorization": "Bearer garbage"},
+        )
+        assert refreshed.status_code == 200
+        logout = test_client.post(
+            "/api/v1/auth/logout",
+            json={"refresh_token": refreshed.json()["refresh_token"]},
+            headers={"Authorization": "Bearer garbage"},
+        )
+        assert logout.status_code == 200
+
+        access_token = registered.json()["access_token"]
+        protected = test_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+        assert protected.status_code == 200
+
+
+def test_expired_access_token_is_rejected_with_authentication_code() -> None:
+    import time
+
+    import jwt
+    from fastapi.testclient import TestClient
+
+    from app.core.config import get_settings
+    from app.main import app
+
+    settings = get_settings()
+    expired_token = jwt.encode(
+        {"sub": "1", "type": "access", "iat": int(time.time()) - 120, "exp": int(time.time()) - 60},
+        settings.secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {expired_token}"})
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "authentication_required"
+
+
+def test_trusted_forwarded_ips_create_distinct_rate_limit_buckets(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from app.cache.redis_client import RedisClient
+    from app.core.config import Settings
+    from app.middlewares import rate_limit_middleware
+
+    settings = Settings(
+        trust_proxy_headers=True,
+        rate_limit_default=1,
+        redis_url="redis://127.0.0.1:1/0",
+    )
+    monkeypatch.setattr(rate_limit_middleware, "get_settings", lambda: settings)
+    RedisClient.reset_all_memory_stores()
+
+    async def endpoint(request):  # noqa: ANN001
+        return JSONResponse({"ok": True})
+
+    test_app = Starlette(routes=[Route("/resource", endpoint)])
+    test_app.add_middleware(rate_limit_middleware.RateLimitMiddleware)
+    with TestClient(test_app) as client:
+        first_ip = client.get("/resource", headers={"X-Forwarded-For": "203.0.113.10"})
+        second_ip = client.get("/resource", headers={"X-Forwarded-For": "203.0.113.11"})
+        repeated_ip = client.get("/resource", headers={"X-Forwarded-For": "203.0.113.10"})
+
+    assert first_ip.status_code == 200
+    assert second_ip.status_code == 200
+    assert repeated_ip.status_code == 429
+
+
+def test_admin_panel_gates_do_not_affect_api_or_public_static(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.api import admin
+    from app.core.config import Settings
+    from app.main import app
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(admin, "_settings", lambda: Settings(admin_panel_enabled=False))
+        assert client.get("/admin/login").status_code == 404
+        assert client.get("/").status_code == 200
+        assert client.get("/api/v1/app-config").status_code == 200
+
+        monkeypatch.setattr(
+            admin,
+            "_settings",
+            lambda: Settings(admin_panel_enabled=True, admin_allowed_ips_raw="192.0.2.1"),
+        )
+        assert client.get("/admin/login").status_code == 403
+        assert client.get("/").status_code == 200
+        assert client.get("/api/v1/app-config").status_code == 200
+        assert client.get("/admin/static/no-such-file.css").status_code == 404
 
 
 def test_access_token_claims_are_integers() -> None:
