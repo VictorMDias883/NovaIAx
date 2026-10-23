@@ -21,8 +21,9 @@ Architecture:
             └── cache_router           (prefix="/cache",             tags=["cache"])
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from app.api.deps import get_current_user
 from app.api.v1.agent_orchestrator_router import router as agent_orchestrator_router
 from app.api.v1.agent_personalization_router import router as agent_personalization_router
 from app.api.v1.ai_feedback_router import router as ai_feedback_router
@@ -55,26 +56,26 @@ router = APIRouter()
 # Include each sub-router.  The sub-routers' own prefixes are appended
 # to the ``/api/v1`` prefix set in ``main.py``.
 router.include_router(auth_router)
-router.include_router(cache_router)
+router.include_router(cache_router, dependencies=[Depends(get_current_user)])
 router.include_router(app_config_router)
-router.include_router(objective_router)
-router.include_router(objective_assistant_router)
-router.include_router(roadmap_day_router)
-router.include_router(user_router)
-router.include_router(proxy_router)
-router.include_router(system_prompt_router)
-router.include_router(chat_router)
-router.include_router(general_agent_router)
-router.include_router(device_agent_router)
-router.include_router(agent_personalization_router)
-router.include_router(agent_orchestrator_router)
-router.include_router(ai_feedback_router)
+router.include_router(objective_router, dependencies=[Depends(get_current_user)])
+router.include_router(objective_assistant_router, dependencies=[Depends(get_current_user)])
+router.include_router(roadmap_day_router, dependencies=[Depends(get_current_user)])
+router.include_router(user_router, dependencies=[Depends(get_current_user)])
+router.include_router(proxy_router, dependencies=[Depends(get_current_user)])
+router.include_router(system_prompt_router, dependencies=[Depends(get_current_user)])
+router.include_router(chat_router, dependencies=[Depends(get_current_user)])
+router.include_router(general_agent_router, dependencies=[Depends(get_current_user)])
+router.include_router(device_agent_router, dependencies=[Depends(get_current_user)])
+router.include_router(agent_personalization_router, dependencies=[Depends(get_current_user)])
+router.include_router(agent_orchestrator_router, dependencies=[Depends(get_current_user)])
+router.include_router(ai_feedback_router, dependencies=[Depends(get_current_user)])
 router.include_router(subscription_router)
-router.include_router(promo_router)
-router.include_router(productivity_router)
-router.include_router(medication_router)
-router.include_router(finance_router)
-router.include_router(study_router)
-router.include_router(logbook_router)
-router.include_router(community_router)
-router.include_router(privacy_router)
+router.include_router(promo_router, dependencies=[Depends(get_current_user)])
+router.include_router(productivity_router, dependencies=[Depends(get_current_user)])
+router.include_router(medication_router, dependencies=[Depends(get_current_user)])
+router.include_router(finance_router, dependencies=[Depends(get_current_user)])
+router.include_router(study_router, dependencies=[Depends(get_current_user)])
+router.include_router(logbook_router, dependencies=[Depends(get_current_user)])
+router.include_router(community_router, dependencies=[Depends(get_current_user)])
+router.include_router(privacy_router, dependencies=[Depends(get_current_user)])

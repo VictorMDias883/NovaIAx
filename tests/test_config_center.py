@@ -217,7 +217,15 @@ async def test_suspended_account_message_carries_the_support_contact(client: Tes
         )
         await session.commit()
 
-    resp = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    login_after_suspension = client.post("/api/v1/auth/login", json={"email": email, "password": "Password123"})
+    assert login_after_suspension.status_code == 200
+    refreshed = client.post("/api/v1/auth/refresh", json={"refresh_token": login.json()["refresh_token"]})
+    assert refreshed.status_code == 200
+
+    resp = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {login_after_suspension.json()['access_token']}"},
+    )
 
     assert resp.status_code == 403
     assert "contato@exemplo.com.br" in resp.text

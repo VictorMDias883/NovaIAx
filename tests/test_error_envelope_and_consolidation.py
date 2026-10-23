@@ -22,7 +22,6 @@ from app.core.config import Settings
 from app.db.session import SessionLocal
 from app.exceptions.api_errors import APIError, APIErrorCode, code_for_status
 from app.main import app
-from app.middlewares.auth_middleware import _is_public_path
 from app.models.user import User
 from app.services.objective_assistant_service import ObjectiveAssistantService
 from fastapi.testclient import TestClient
@@ -93,7 +92,7 @@ def test_validation_error_carries_a_code_without_logging_input(client: TestClien
 
 
 def test_missing_credentials_error_carries_a_code(client: TestClient) -> None:
-    response = client.get(f"{_API}/users/me")
+    response = client.patch(f"{_API}/users/me", json={"full_name": "Updated Name"})
     assert response.status_code == 401
     body = response.json()
     assert body["code"] == "authentication_required"
@@ -117,10 +116,19 @@ def test_not_found_error_carries_a_code(client: TestClient, created_emails: list
 # ---------------------------------------------------------------------------
 
 
-def test_rtdn_path_bypasses_jwt_gate() -> None:
-    assert _is_public_path("/api/v1/billing/google/rtdn")
-    # The user-facing verify endpoint must stay protected.
-    assert not _is_public_path("/api/v1/billing/google/verify")
+def test_rtdn_uses_its_own_verifier_without_jwt(monkeypatch: pytest.MonkeyPatch, client: TestClient) -> None:
+    from app.api.v1 import subscription_router
+
+    async def allow_pubsub(request) -> None:  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(subscription_router, "_authorize_rtdn", allow_pubsub)
+    response = client.post(f"{_API}/billing/google/rtdn", json={}, headers={"Authorization": "Bearer garbage"})
+    assert response.status_code == 200
+
+    protected = client.post(f"{_API}/billing/google/verify", json={})
+    assert protected.status_code == 401
+    assert protected.json()["code"] == "authentication_required"
 
 
 # ---------------------------------------------------------------------------

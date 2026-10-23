@@ -33,9 +33,8 @@ Routes:
     POST /admin/security/totp/disable             — disable TOTP
 
 .. note::
-    ``AuthMiddleware`` treats ``/admin`` as public because the panel has its
-    own authentication scheme.  The route-level dependencies below are the
-    only gate and run on every handler.
+    The panel has its own authentication scheme. The route-level dependencies
+    below are its first authorization gate and run on every handler.
 """
 
 from __future__ import annotations

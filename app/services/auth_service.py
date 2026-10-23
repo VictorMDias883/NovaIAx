@@ -42,7 +42,6 @@ from app.exceptions.api_errors import APIError, APIErrorCode
 from app.models.consent import DEFAULT_CONSENT_TYPES
 from app.models.user import UserRole
 from app.repositories.user_repository import UserRepository
-from app.services.app_config_service import suspended_detail
 from app.services.privacy_service import ConsentService
 
 logger = get_logger(__name__)
@@ -201,15 +200,6 @@ class AuthService:
         if user is None:
             raise HTTPException(status_code=401, detail="Token de atualização inválido.")
 
-        if user.suspended_at is not None:
-            # A suspended account cannot extend its session: reject the refresh
-            # so the client is forced to re-authenticate (and fails there too).
-            raise APIError(
-                403,
-                await suspended_detail(self.session),
-                code=APIErrorCode.ACCOUNT_SUSPENDED,
-            )
-
         issued_at = claim_int(payload, "iat")
         if issued_at is None:
             raise HTTPException(status_code=401, detail="Token de atualização inválido.")
@@ -324,18 +314,6 @@ class AuthService:
             await self.login_rate_limiter.on_failure(command.email, client_ip)
             logger.info("Failed login attempt")
             raise APIError(401, "Credenciais inválidas.", code=APIErrorCode.INVALID_CREDENTIALS)
-
-        if user.suspended_at is not None:
-            # Refuse to mint tokens for a suspended account, exactly like the
-            # per-request guard in :func:`app.api.deps._load_user` refuses to
-            # serve one.  Correct credentials are required first so the state
-            # is only disclosed to the account owner.
-            await self.login_rate_limiter.on_success(command.email, client_ip)
-            raise APIError(
-                403,
-                await suspended_detail(self.session),
-                code=APIErrorCode.ACCOUNT_SUSPENDED,
-            )
 
         if pwd_context.needs_update(user.password_hash):
             user.password_hash = pwd_context.hash(command.password)

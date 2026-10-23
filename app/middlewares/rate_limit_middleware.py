@@ -75,9 +75,8 @@ def extract_user_id(request: Request) -> int | None:
     header itself and decodes the JWT to obtain the ``sub`` claim.  Only a
     well-formed ``access`` token with a numeric ``sub`` yields an id; anything
     else (missing header, refresh token, revoked/expired/invalid signature)
-    falls back to ``None`` so the caller buckets by IP instead.  A token that
-    fails to decode here will still be rejected later by the auth middleware,
-    so a 401 is never weakened by this best-effort lookup.
+    falls back to ``None`` so the caller buckets by IP instead. Authentication
+    itself is enforced later by the protected route's FastAPI dependency.
     """
     authorization = request.headers.get("Authorization")
     if not authorization or not authorization.startswith("Bearer "):

@@ -45,10 +45,10 @@ from app.core.config import get_settings  # noqa: E402
 from app.core.health import check_database, check_redis  # noqa: E402
 from app.core.logging import configure_logging, get_logger  # noqa: E402
 from app.exceptions.handlers import register_exception_handlers  # noqa: E402
-from app.middlewares.auth_middleware import AuthMiddleware  # noqa: E402
 from app.middlewares.logging_middleware import LoggingMiddleware  # noqa: E402
 from app.middlewares.rate_limit_middleware import RateLimitMiddleware  # noqa: E402
 from app.middlewares.security_headers_middleware import SecurityHeadersMiddleware  # noqa: E402
+from app.middlewares.trailing_slash_middleware import TrailingSlashMiddleware  # noqa: E402
 
 # Module-level logger used by the health-check endpoint.
 logger = get_logger(__name__)
@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # ---------------------------------------------------------------------------
 # Create the FastAPI application instance.  The ``title`` and ``version``
 # are surfaced in the auto-generated OpenAPI documentation.
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan, redirect_slashes=False)
 
 # ---------------------------------------------------------------------------
 # Middleware registration
@@ -124,16 +124,20 @@ app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 # added is the *outermost* layer).  The order below is intentional:
 #
 #   1. CORSMiddleware  – handles browser pre-flight (OPTIONS) requests.
-#   2. SecurityHeaders – injects security-related HTTP headers.
-#   3. LoggingMiddleware – records request/response metadata.
-#   4. AuthMiddleware  – enforces authentication on protected routes.
-#   5. RateLimitMiddleware – enforces per-client request-rate limits.
+#   2. TrailingSlashMiddleware – internally retries the opposite slash form.
+#   3. RateLimitMiddleware – enforces per-client request-rate limits.
+#   4. LoggingMiddleware – records request/response metadata.
+#   5. SecurityHeaders – injects security-related HTTP headers.
 #
 # Because Starlette wraps middleware in reverse, the *actual* execution
 # order for an incoming request is:
-#   RateLimit → Auth → Logging → SecurityHeaders → CORS → route handler
+#   CORS → TrailingSlash → RateLimit → Logging → SecurityHeaders → route handler
 # and for the response the order is reversed again.
 
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(LoggingMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(TrailingSlashMiddleware, router=app.router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,  # Origins permitted to make cross-origin requests.
@@ -141,10 +145,6 @@ app.add_middleware(
     allow_methods=["*"],  # Permit all HTTP methods (GET, POST, PUT, DELETE, …).
     allow_headers=["*"],  # Permit all request headers.
 )
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(LoggingMiddleware)
-app.add_middleware(AuthMiddleware)
-app.add_middleware(RateLimitMiddleware)
 
 # ---------------------------------------------------------------------------
 # Router registration
@@ -180,6 +180,13 @@ register_admin_exception_handler(app)
 # ---------------------------------------------------------------------------
 # Health-check endpoint
 # ---------------------------------------------------------------------------
+@app.get("/")
+async def root() -> dict[str, str]:
+    """Return minimal public service information for the base URL."""
+    return {"name": "NovaIAx API", "status": "ok", "version": app.version}
+
+
+@app.api_route("/health", methods=["HEAD"], include_in_schema=False)
 @app.get("/health")
 async def health() -> JSONResponse:
     """Combined liveness/readiness probe used by orchestrators and probes.

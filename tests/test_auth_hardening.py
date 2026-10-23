@@ -527,31 +527,49 @@ def test_a_second_user_gets_its_own_identity(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. /redoc is public
+# 6. Public and protected routes use explicit dependency behavior
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", ["/redoc", "/redoc/"])
-def test_redoc_is_a_public_path(path) -> None:
-    """ReDoc is rendered from the public OpenAPI schema, like /docs."""
-    from app.middlewares.auth_middleware import _is_public_path
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/"),
+        ("GET", "/health"),
+        ("GET", "/api/v1/app-config"),
+        ("POST", "/api/v1/auth/login"),
+        ("POST", "/api/v1/auth/refresh"),
+        ("POST", "/api/v1/auth/logout"),
+        ("GET", "/privacy"),
+        ("GET", "/terms"),
+        ("GET", "/account-deletion"),
+        ("GET", "/docs"),
+        ("GET", "/redoc"),
+        ("GET", "/openapi.json"),
+    ],
+)
+def test_public_routes_ignore_garbage_bearer(method: str, path: str) -> None:
+    """Public handlers do not interpret a stale or malformed user token."""
+    from fastapi.testclient import TestClient
 
-    assert _is_public_path(path)
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.request(method, path, headers={"Authorization": "Bearer garbage"})
+
+    assert response.status_code not in {401, 403}
 
 
-@pytest.mark.parametrize("path", ["/docs", "/openapi.json", "/health", "/api/v1/auth/login"])
-def test_other_public_paths_stay_public(path) -> None:
-    from app.middlewares.auth_middleware import _is_public_path
+def test_protected_route_requires_authentication() -> None:
+    from fastapi.testclient import TestClient
 
-    assert _is_public_path(path)
+    from app.main import app
 
+    with TestClient(app) as client:
+        response = client.get("/api/v1/objectives/")
 
-@pytest.mark.parametrize("path", ["/redocs", "/redocx", "/api/v1/objectives/"])
-def test_redoc_prefix_does_not_over_match(path) -> None:
-    """The prefix must not leak authentication onto unrelated paths."""
-    from app.middlewares.auth_middleware import _is_public_path
-
-    assert not _is_public_path(path)
+    assert response.status_code == 401
+    assert response.json()["code"] == "authentication_required"
 
 
 def test_access_token_claims_are_integers() -> None:

@@ -194,8 +194,7 @@ async def _release_read_transaction(session: AsyncSession | None) -> None:
        later attribute access would trigger a lazy refresh that raises
        ``MissingGreenlet``.
 
-    No-op when no real session is in play (the auth middleware path, where
-    the dependency is resolved outside FastAPI's DI container).
+    No-op when no real session is in play.
     """
     if isinstance(session, AsyncSession) and session.in_transaction():
         await session.rollback()
@@ -204,12 +203,8 @@ async def _release_read_transaction(session: AsyncSession | None) -> None:
 def _cached_identity(request: Request) -> dict[str, object] | None:
     """Return the identity already resolved for this request, if any.
 
-    ``AuthMiddleware`` authenticates every protected request before the route
-    runs, and most protected routes then ask for :func:`get_current_user`
-    again.  Both calls decode the token, hit the denylist and load the user,
-    so each request paid for the same work twice — two database round-trips
-    and two Redis lookups before a single line of business logic.  The
-    middleware's result is memoised here and reused by the dependency.
+    Repeated dependency paths reuse the identity resolved earlier in this
+    request, alongside FastAPI's per-request dependency cache.
     """
     cached = request.scope.get("state", {}).get(_IDENTITY_STATE_KEY)
     return cached if isinstance(cached, dict) else None
@@ -243,18 +238,16 @@ async def get_current_user(
 
     If neither mechanism succeeds, a 401 Unauthorized is raised.
 
-    When :class:`~app.middlewares.auth_middleware.AuthMiddleware` has
-    already authenticated the same request, its identity is reused instead
-    of repeating the token verification and the user lookup.
+    Repeated dependency paths reuse the identity already resolved for this
+    request instead of repeating token verification and user lookup.
 
     Args:
         request: The incoming :class:`Request`.
         api_key_service: The :class:`ApiKeyService` used for API-key
             validation.
-        session: A request-scoped database session (or ``None`` when
-            called outside FastAPI's DI container).
+        session: A request-scoped database session.
         denylist: The :class:`TokenDenylist` used to reject revoked
-            tokens (or ``None`` when called without DI).
+            tokens.
 
     Returns:
         A dictionary with ``id``, ``full_name``, ``email``, and ``role``

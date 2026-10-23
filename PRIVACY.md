@@ -80,7 +80,8 @@ Após a exclusão o usuário não consegue mais autenticar (**401**).
 
 ## Páginas públicas
 
-Rotas sem autenticação (whitelist em `app/middlewares/auth_middleware.py`):
+Rotas públicas não recebem a dependência de autenticação do usuário; as rotas
+protegidas recebem `get_current_user` na configuração do respectivo router:
 
 | Rota | Descrição |
 | --- | --- |
