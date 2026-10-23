@@ -95,7 +95,7 @@ class DeletionRequestService:
             raise HTTPException(status_code=404, detail="Solicitação não encontrada.")
         logger.info(
             "deletion_request_executed",
-            extra={"request_id": request_id, "email": email, "purged": purged},
+            extra={"request_id": request_id, "purged": purged},
         )
         view = self._view(updated)
         await self.session.rollback()

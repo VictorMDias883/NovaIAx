@@ -72,7 +72,14 @@ def register_exception_handlers(app: FastAPI) -> None:
         Logs the validation errors (including the request path) and
         returns a generic error message to the client.
         """
-        logger.warning("validation_error", extra={"path": request.url.path, "errors": exc.errors()})
+        logger.warning(
+            "validation_error",
+            extra={
+                "path": request.url.path,
+                "error_count": len(exc.errors()),
+                "error_types": sorted({str(error.get("type", "unknown")) for error in exc.errors()}),
+            },
+        )
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={

@@ -81,10 +81,15 @@ def test_apierror_keeps_its_explicit_code() -> None:
     assert exc.status_code == 401
 
 
-def test_validation_error_carries_a_code(client: TestClient) -> None:
-    response = client.post(f"{_API}/auth/register", json={})
+def test_validation_error_carries_a_code_without_logging_input(client: TestClient, caplog) -> None:
+    secret_value = "private-user-value-912847"
+    response = client.post(
+        f"{_API}/auth/register",
+        json={"full_name": "Name", "email": "valid@example.com", "password": secret_value, "birth_date": "1990-01-01"},
+    )
     assert response.status_code == 422
     assert response.json() == {"detail": "Requisição inválida.", "code": "validation_error"}
+    assert secret_value not in caplog.text
 
 
 def test_missing_credentials_error_carries_a_code(client: TestClient) -> None:

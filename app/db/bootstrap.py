@@ -133,7 +133,7 @@ async def bootstrap_admin_account(settings: Settings | None = None) -> str:
 
     email_error = validate_bootstrap_email(email)
     if email_error:
-        logger.error("Admin bootstrap refused: %s", email_error, extra={"email": email})
+        logger.error("Admin bootstrap refused: %s", email_error)
         return OUTCOME_SKIPPED
 
     password_error = validate_bootstrap_password(password)
@@ -147,7 +147,7 @@ async def bootstrap_admin_account(settings: Settings | None = None) -> str:
         # Every value that must never reach the logs: the password itself and
         # — once it is computed — its hash.  They are scrubbed from the error
         # message and from the traceback below.
-        secrets: list[str] = [password]
+        secrets: list[str] = [password, email]
         async with SessionLocal() as session:
             async with session.begin():
                 return await _apply_bootstrap(session, settings, email, password, secrets)
@@ -157,7 +157,6 @@ async def bootstrap_admin_account(settings: Settings | None = None) -> str:
             "Admin bootstrap failed: %s\n%s",
             _scrub(str(exc), secrets),
             _scrub("".join(traceback.format_exception(exc)), secrets),
-            extra={"email": email},
         )
         return OUTCOME_SKIPPED
 
@@ -199,7 +198,7 @@ async def _apply_bootstrap(
                 await _write_audit(session, ACTION_CREATED, created.id)
                 logger.info(
                     "Operator account created",
-                    extra={"email": email, "user_id": created.id, "action": ACTION_CREATED},
+                    extra={"user_id": created.id, "action": ACTION_CREATED},
                 )
                 return OUTCOME_CREATED
         # The row was already there (another worker won the race): the account
@@ -207,7 +206,7 @@ async def _apply_bootstrap(
         user = await repo.get_by_email(email)
 
     if user is None:
-        logger.warning("Operator account could not be created", extra={"email": email})
+        logger.warning("Operator account could not be created")
         return OUTCOME_UNCHANGED
 
     if user.role == UserRole.ADMIN:
@@ -216,7 +215,7 @@ async def _apply_bootstrap(
     if not settings.admin_bootstrap_promote_existing:
         logger.info(
             "Operator account exists with a different role and was left untouched",
-            extra={"email": email, "role": user.role.value},
+            extra={"user_id": user.id, "role": user.role.value},
         )
         return OUTCOME_UNCHANGED
 
@@ -227,7 +226,7 @@ async def _apply_bootstrap(
     await _write_audit(session, ACTION_PROMOTED, user.id)
     logger.info(
         "Operator account promoted to ADMIN",
-        extra={"email": email, "user_id": user.id, "action": ACTION_PROMOTED},
+        extra={"user_id": user.id, "action": ACTION_PROMOTED},
     )
     return OUTCOME_PROMOTED
 
