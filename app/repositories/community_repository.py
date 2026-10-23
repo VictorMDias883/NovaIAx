@@ -170,6 +170,16 @@ class ReportConfirmationRepository(_BaseRepository):
         rows = (await self.session.execute(stmt)).all()
         return {int(report_id): int(count) for report_id, count in rows}
 
+    async def report_ids_confirmed_by_user(self, report_ids: list[int], user_id: int) -> set[int]:
+        """Return report ids in the page confirmed by ``user_id`` in one query."""
+        if not report_ids:
+            return set()
+        stmt = select(ReportConfirmation.report_id).where(
+            ReportConfirmation.report_id.in_(report_ids),
+            ReportConfirmation.user_id == user_id,
+        )
+        return {int(report_id) for report_id in (await self.session.execute(stmt)).scalars().all()}
+
 
 class ReportFlagRepository(_BaseRepository):
     """Data access for :class:`ReportFlag`."""

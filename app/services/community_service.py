@@ -167,10 +167,8 @@ class CommunityService:
         )
         report_ids = [row.id for row in rows]
         confirmation_counts = await self.confirmations.counts_for_reports(report_ids)
-        flag_counts = {}
-        for report_id in report_ids:
-            flag_counts[report_id] = await self.flags.count_for_report(report_id)
-        my_confirmations = {row.id for row in rows if await self.confirmations.get(row.id, user_id) is not None}
+        flag_counts = await self.flags.counts_for_reports(report_ids)
+        my_confirmations = await self.confirmations.report_ids_confirmed_by_user(report_ids, user_id)
         views = [
             {
                 "id": row.id,

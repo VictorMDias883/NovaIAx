@@ -419,6 +419,10 @@ async def test_report_moderation_queue_and_status_change(
     )
     assert created.status_code == 201, created.text
     report_id = created.json()["id"]
+    listing = client.get("/api/v1/community/reports", headers=author_headers)
+    assert listing.status_code == 200, listing.text
+    assert listing.json()["items"][0]["id"] == report_id
+    assert listing.json()["items"][0]["confirmed_by_me"] is False
 
     client = await _admin_login(client, admin_email)
 
