@@ -128,4 +128,12 @@ The API route families not called out individually above are also part of the ex
 
 ## Baseline test scope
 
-In-process checks covered root, health, app config, auth register/login/refresh/logout, privacy pages, docs/schema, objectives slash variants, no-token and garbage-token headers, a successful registered-user token, an expired JWT, wrong-password login, and forwarded headers. Redis unavailability prevented a healthy `/health` response. This was the pre-change baseline; the planned regression suite must exercise every registered route and method after the redesign.
+In-process checks covered root, health, app config, auth register/login/refresh/logout, privacy pages, docs/schema, objectives slash variants, no-token and garbage-token headers, a successful registered-user token, an expired JWT, wrong-password login, and forwarded headers. Redis unavailability prevented a healthy `/health` response. This was the pre-change baseline.
+
+## Post-fix verification (2026-10-23)
+
+Authentication is now enforced through FastAPI dependencies attached when protected v1 routers are included. Auth, app-config, billing (with DB-user dependencies on its user routes and its own Pub/Sub verifier for RTDN), framework docs, and public compliance pages do not inherit a user-auth dependency. Admin login and static assets stay on the panel's separate cookie/IP/CSRF controls. There is no path-based API auth allowlist.
+
+The live OpenAPI registry contains 227 method/path operations. `tests/test_auth_hardening.py::test_every_registered_operation_is_classified_and_auth_guarded` enumerates all of them, explicitly classifies the public API operations, exempts the admin cookie-auth surface, and asserts missing/garbage-token 401s on protected operations. The same suite checks public slash variants, protected slash variants, CORS preflight, forwarded-proto Location headers, invalid/expired tokens, suspension behavior, and distinct trusted-forwarded-IP rate-limit buckets.
+
+The in-process and local-Uvicorn diagnostic completed 52 checks with zero auth failures. `/health` returned 503 because Redis is not available in this environment; the diagnostic reports that as reachable-but-degraded, not as an auth failure. Direct curl confirmed `GET /` returns the root JSON and a protected slashless objectives request returns 401 without a Location header behind `X-Forwarded-Proto: https`.

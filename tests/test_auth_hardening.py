@@ -551,9 +551,8 @@ def test_a_second_user_gets_its_own_identity(monkeypatch) -> None:
 )
 def test_public_routes_ignore_garbage_bearer(method: str, path: str) -> None:
     """Public handlers do not interpret a stale or malformed user token."""
-    from fastapi.testclient import TestClient
-
     from app.main import app
+    from fastapi.testclient import TestClient
 
     with TestClient(app) as client:
         response = client.request(method, path, headers={"Authorization": "Bearer garbage"})
@@ -562,9 +561,8 @@ def test_public_routes_ignore_garbage_bearer(method: str, path: str) -> None:
 
 
 def test_protected_route_requires_authentication() -> None:
-    from fastapi.testclient import TestClient
-
     from app.main import app
+    from fastapi.testclient import TestClient
 
     with TestClient(app) as client:
         response = client.get("/api/v1/objectives/")
@@ -600,11 +598,11 @@ def test_every_registered_operation_is_classified_and_auth_guarded(monkeypatch: 
     """Enumerate OpenAPI operations; the admin panel is separately cookie-authenticated."""
     import re
 
-    from fastapi.testclient import TestClient
-
     from app.api.v1 import subscription_router
     from app.main import app
     from app.middlewares.rate_limit_middleware import RateLimitMiddleware
+    from fastapi.routing import APIRoute
+    from fastapi.testclient import TestClient
 
     async def pass_rate_limit(self, request, call_next):  # noqa: ANN001
         return await call_next(request)
@@ -616,19 +614,34 @@ def test_every_registered_operation_is_classified_and_auth_guarded(monkeypatch: 
     monkeypatch.setattr(subscription_router, "_authorize_rtdn", allow_rtdn)
     monkeypatch.setattr(app, "middleware_stack", None)
 
-    operations = {
+    def walk_routes(routes, prefix: str = ""):
+        for route in routes:
+            if isinstance(route, APIRoute):
+                path = re.sub(r"\{([^}:]+):[^}]+\}", r"{\1}", prefix + route.path)
+                for method in route.methods:
+                    yield method, path
+            elif hasattr(route, "original_router"):
+                context = route.include_context
+                yield from walk_routes(context.included_router.routes, prefix + context.prefix)
+
+    registered_operations = set(walk_routes(app.routes))
+    schema_operations = {
         (method.upper(), path)
         for path, path_item in app.openapi()["paths"].items()
         for method in path_item
         if method in {"get", "post", "put", "patch", "delete", "options", "head"}
     }
-    assert PUBLIC_ROUTES - operations == {
-        ("HEAD", "/health"),
+    assert schema_operations <= registered_operations
+    assert registered_operations - schema_operations == {("HEAD", "/health")}
+    framework_public_routes = {
         ("GET", "/docs"),
         ("GET", "/docs/oauth2-redirect"),
         ("GET", "/redoc"),
         ("GET", "/openapi.json"),
     }
+    assert PUBLIC_ROUTES - registered_operations == framework_public_routes
+    operations = registered_operations | framework_public_routes
+    assert PUBLIC_ROUTES - operations == set()
 
     def request_public(client, method: str, path: str, headers: dict[str, str]):  # noqa: ANN001
         logical_path = path.rstrip("/") or "/"
@@ -697,6 +710,16 @@ def test_every_registered_operation_is_classified_and_auth_guarded(monkeypatch: 
                 )
                 assert response.status_code not in {401, 403}
                 assert not response.headers.get("location", "").startswith("http://")
+                slash_variant = concrete_path[:-1] if concrete_path.endswith("/") else f"{concrete_path}/"
+                slash_response = client.request(
+                    method,
+                    slash_variant,
+                    json={} if method in {"POST", "PUT", "PATCH"} else None,
+                    headers={"X-Forwarded-Proto": "https", "Authorization": "Bearer garbage"},
+                )
+                assert slash_response.status_code == response.status_code
+                assert slash_response.status_code not in {307, 308}
+                assert not slash_response.headers.get("location", "").startswith("http://")
                 continue
 
             headers = {"X-Forwarded-Proto": "https"}
@@ -738,9 +761,8 @@ def test_every_registered_operation_is_classified_and_auth_guarded(monkeypatch: 
 
 
 def test_public_auth_flow_ignores_authorization_header() -> None:
-    from fastapi.testclient import TestClient
-
     from app.main import app
+    from fastapi.testclient import TestClient
 
     email = f"public-auth-{uuid4().hex}@example.com"
     payload = {
@@ -761,8 +783,8 @@ def test_public_auth_flow_ignores_authorization_header() -> None:
         assert test_client.get("/api/v1/app-config", headers={"Authorization": "Bearer garbage"}).status_code == 200
 
         import time
-        import jwt
 
+        import jwt
         from app.core.config import get_settings
 
         settings = get_settings()
@@ -805,10 +827,9 @@ def test_expired_access_token_is_rejected_with_authentication_code() -> None:
     import time
 
     import jwt
-    from fastapi.testclient import TestClient
-
     from app.core.config import get_settings
     from app.main import app
+    from fastapi.testclient import TestClient
 
     settings = get_settings()
     expired_token = jwt.encode(
@@ -824,14 +845,13 @@ def test_expired_access_token_is_rejected_with_authentication_code() -> None:
 
 
 def test_trusted_forwarded_ips_create_distinct_rate_limit_buckets(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.cache.redis_client import RedisClient
+    from app.core.config import Settings
+    from app.middlewares import rate_limit_middleware
     from fastapi.testclient import TestClient
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
     from starlette.routing import Route
-
-    from app.cache.redis_client import RedisClient
-    from app.core.config import Settings
-    from app.middlewares import rate_limit_middleware
 
     settings = Settings(
         trust_proxy_headers=True,
@@ -857,11 +877,10 @@ def test_trusted_forwarded_ips_create_distinct_rate_limit_buckets(monkeypatch: p
 
 
 def test_admin_panel_gates_do_not_affect_api_or_public_static(monkeypatch: pytest.MonkeyPatch) -> None:
-    from fastapi.testclient import TestClient
-
     from app.api import admin
     from app.core.config import Settings
     from app.main import app
+    from fastapi.testclient import TestClient
 
     with TestClient(app) as client:
         monkeypatch.setattr(admin, "_settings", lambda: Settings(admin_panel_enabled=False))

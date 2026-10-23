@@ -202,7 +202,6 @@ async def test_suspended_account_message_carries_the_support_contact(client: Tes
     assert registered.status_code == 201, registered.text
     login = client.post("/api/v1/auth/login", json={"email": email, "password": "Password123"})
     assert login.status_code == 200, login.text
-    token = login.json()["access_token"]
 
     async with SessionLocal() as session:
         await AppConfigService(session, get_settings()).update(
@@ -228,6 +227,7 @@ async def test_suspended_account_message_carries_the_support_contact(client: Tes
     )
 
     assert resp.status_code == 403
+    assert resp.json()["code"] == "account_suspended"
     assert "contato@exemplo.com.br" in resp.text
     assert "https://wa.me/5511999999999" in resp.text
 

@@ -23,9 +23,12 @@ every feature area, plan gating, AI quota and the privacy/compliance flows.
 | Local dev   | `http://localhost:8000` |
 | Production  | the Render service URL (see `DEPLOY.md`) |
 
-The JSON API lives under `/api/v1`. The liveness/readiness probe is `/health`
-(returns `{"status":"ok","db":"ok","redis":"ok"}` with HTTP 200, or 503 when a
-dependency is down).
+The JSON API lives under `/api/v1`. The public root `/` returns
+`{"name":"NovaIAx API","status":"ok","version":"0.1.0"}`. The liveness/readiness
+probe is `/health` (HEAD is also supported); it returns
+`{"status":"ok","db":"ok","redis":"ok"}` with HTTP 200, or 503 when a
+dependency is down. Trailing-slash variants are normalized internally and do
+not issue redirects.
 
 ---
 
@@ -33,7 +36,7 @@ dependency is down).
 
 ### 2.1 Credentials
 
-Every user-scoped request carries a JWT:
+Every protected user-scoped request carries a JWT:
 
 ```
 Authorization: Bearer <access_token>
@@ -41,8 +44,19 @@ Authorization: Bearer <access_token>
 
 - **Access token TTL:** 15 minutes.
 - **Refresh token TTL:** 7 days.
-- Only access tokens are accepted on endpoints; a refresh token is rejected
-  with `401 authentication_required`.
+- Protected endpoints accept only access tokens; a refresh token used as a
+  Bearer token is rejected with `401 authentication_required`.
+- These routes are public and do not require a user token: `GET /`, `GET` or
+  `HEAD /health`, `GET /api/v1/app-config`, `POST /api/v1/auth/register`,
+  `/login`, `/refresh`, `/logout`, `GET /privacy`, `/terms`,
+  `/account-deletion`, `POST /account-deletion/request`,
+  `POST /api/v1/billing/google/rtdn`, `/docs`, `/redoc`, `/openapi.json`, and
+  `/admin/login` plus `/admin/static/*`. RTDN verifies Pub/Sub credentials on
+  its own; the admin panel uses its own cookie/CSRF flow.
+- An invalid, expired, or malformed `Authorization` header is ignored on
+  public routes. In particular, a stale access token must not block login,
+  registration, refresh, or logout. Refresh and logout use the refresh token
+  in the request body, not the Authorization header.
 
 ### 2.2 Endpoints
 
@@ -77,13 +91,19 @@ consents.
 ### 2.3 Token handling the app MUST implement
 
 1. Store `access_token` + `refresh_token` securely (e.g. `flutter_secure_storage`).
-2. On any `401` with `code == "authentication_required"`, call
-   `POST /api/v1/auth/refresh` once and retry the original request.
-3. If refresh also returns `401`, clear the session and route to login.
-4. On logout, call `POST /api/v1/auth/logout` before clearing local tokens
-   (this revokes the refresh token server-side).
-5. Never retry a `401 invalid_credentials` (wrong password) — that is a real
-   login failure.
+2. Send the access token only to protected routes; do not attach it to public
+  auth, app-config, health, or legal-page requests.
+3. On a protected-route `401 authentication_required`, call
+  `POST /api/v1/auth/refresh` once with `{ "refresh_token": "..." }`, then
+  retry the original request with the new access token.
+4. If refresh returns `401 authentication_required`, clear the session and
+  route to login. An Authorization header is not needed for refresh.
+5. On logout, call `POST /api/v1/auth/logout` with the refresh token in the
+  body before clearing local tokens. An access token may optionally be
+  included in the body for immediate revocation; the header is not used.
+6. Never retry a `401 invalid_credentials` (wrong password). A suspended
+  account may complete public login/refresh, but protected requests return
+  `403 account_suspended` until the account is restored.
 
 ### 2.4 Login lockout
 
@@ -125,6 +145,7 @@ users.
 | 401 | `authentication_required` | Refresh then retry (§2.3) |
 | 401 | `invalid_credentials` | Login screen, show `detail` |
 | 403 | `forbidden` | "Sem permissão" |
+| 403 | `account_suspended` | Account is suspended; show the support contact in `detail` |
 | 404 | `not_found` | Resource gone / not yours |
 | 409 | `conflict` | Duplicate (e.g. memory key) |
 | 413 | `payload_too_large` | Reduce body |
