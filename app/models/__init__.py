@@ -31,7 +31,7 @@ from app.models.community import (
     ReportStatus,
     UserBlock,
 )
-from app.models.consent import CONSENT_TYPES, DEFAULT_CONSENT_TYPES, ConsentRecord
+from app.models.consent import CONSENT_TYPES, DEFAULT_CONSENT_TYPES, ConsentEvent, ConsentRecord
 from app.models.deletion_request import (
     DELETION_STATUS_HANDLED,
     DELETION_STATUS_PENDING,
@@ -105,6 +105,7 @@ __all__ = [
     "ChecklistItem",
     "CommunityReport",
     "ConsentRecord",
+    "ConsentEvent",
     "DEFAULT_CONSENT_TYPES",
     "DELETION_STATUS_HANDLED",
     "DELETION_STATUS_PENDING",

@@ -168,6 +168,7 @@ def test_consent_reaccept_updates_in_place(client: TestClient, created_emails: l
     created_emails.append("consent-version@example.com")
     body = _register(client, "consent-version@example.com")
     headers = _auth(body["access_token"])
+    initial_history = client.get(f"{_API}/me/export", headers=headers).json()["consent_history"]
 
     first = client.get(f"{_API}/me/consents", headers=headers).json()["consents"]
     original_accepted_at = next(item for item in first if item["type"] == "terms")["accepted_at"]
@@ -180,6 +181,14 @@ def test_consent_reaccept_updates_in_place(client: TestClient, created_emails: l
     terms_entries = [item for item in second if item["type"] == "terms"]
     assert len(terms_entries) == 1
     assert terms_entries[0]["accepted_at"] >= original_accepted_at
+
+    assert client.delete(f"{_API}/me/consents/terms", headers=headers).status_code == 200
+    export = client.get(f"{_API}/me/export", headers=headers).json()
+    terms_history = [item for item in export["consent_history"] if item["type"] == "terms"]
+    initial_terms_count = sum(item["type"] == "terms" for item in initial_history)
+    added_terms = terms_history[initial_terms_count:]
+    assert [item["action"] for item in added_terms] == ["reaffirmed", "withdrawn"]
+    assert [item["version"] for item in added_terms] == ["2", "2"]
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +227,27 @@ def test_export_seeds_productivity_data(client: TestClient, created_emails: list
 
     bundle = client.get(f"{_API}/me/export", headers=headers).json()
     assert any(task["title"] == "Comprar pão" for task in bundle["productivity"]["tasks"])
+
+
+def test_export_includes_cached_conversation(client: TestClient, created_emails: list[str], monkeypatch) -> None:
+    shared = force_memory_redis(monkeypatch)
+    created_emails.append("export-conversation@example.com")
+    body = _register(client, "export-conversation@example.com")
+    user_id = int(body["user"]["id"])
+    asyncio.run(
+        ConversationCache(shared).save(
+            "general", user_id, [{"role": "user", "content": "Minha anotação pessoal"}]
+        )
+    )
+
+    response = client.get(f"{_API}/me/export", headers=_auth(body["access_token"]))
+    assert response.status_code == 200, response.text
+    bundle = response.json()
+    assert bundle["conversations"]["general"] == [
+        {"role": "user", "content": "Minha anotação pessoal"}
+    ]
+    assert "chat_messages" in bundle
+    assert "promo_redemptions" in bundle
 
 
 def test_export_is_rate_limited_per_user(
@@ -389,6 +419,14 @@ def test_public_delete_form_queues_request_without_password(
             assert pending[0].status == "pending"
 
     asyncio.run(_check())
+
+
+def test_public_delete_form_rejects_missing_csrf_cookie(client: TestClient) -> None:
+    response = client.post(
+        "/account-deletion/request",
+        data={"email": "victim@example.com", "password": "", "csrf_token": "attacker-token"},
+    )
+    assert response.status_code == 403
 
 
 def test_public_delete_form_deletes_with_password(

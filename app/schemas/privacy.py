@@ -146,11 +146,15 @@ class DataExportResponse(BaseModel):
     generated_at: datetime
     user: ExportedUser
     consents: list[ConsentRecordSchema]
+    consent_history: list[dict[str, Any]]
     objectives: list[dict[str, Any]]
     user_agent: ExportedUserAgent | None = None
     memories: list[dict[str, Any]]
     agent_actions: list[dict[str, Any]]
     ai_feedback: list[dict[str, Any]]
+    chat_messages: list[dict[str, Any]]
+    conversations: dict[str, list[dict[str, str]]]
+    promo_redemptions: list[dict[str, Any]]
     subscription: ExportedSubscription | None = None
     purchase_events: list[dict[str, Any]]
     productivity: dict[str, list[dict[str, Any]]]

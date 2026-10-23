@@ -75,7 +75,7 @@ async def export_my_data(
             status_code=429,
             detail="Limite de exportação atingido para esta hora. Tente novamente mais tarde.",
         )
-    bundle = await AccountExportService(session).build_bundle(user_id)
+    bundle = await AccountExportService(session, redis_client=redis_client).build_bundle(user_id)
     await limiter.record(user_id)
     return DataExportResponse.model_validate(bundle)
 

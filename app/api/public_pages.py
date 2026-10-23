@@ -83,12 +83,12 @@ def _render_public(request: Request, name: str, context: dict, mint_cookie: bool
 def _csrf_valid(request: Request, csrf_token: str | None) -> bool:
     """Return whether an optional CSRF token matches the cookie.
 
-    A client that was never issued the cookie cannot be a CSRF target, so a
-    missing cookie is accepted (same behaviour as the admin panel).
+    A missing cookie is rejected: accepting it would let a cross-site POST
+    skip the token check entirely.
     """
     expected = request.cookies.get(_CSRF_COOKIE)
     if expected is None:
-        return True
+        return False
     provided = csrf_token or ""
     return bool(provided) and secrets.compare_digest(provided, expected)
 
@@ -202,7 +202,7 @@ async def account_deletion_request(
     # No password: queue the request for manual handling.
     session.add(DeletionRequest(email=email))
     await session.commit()
-    logger.info("Deletion request queued", extra={"email": email})
+    logger.info("Deletion request queued")
     return templates.TemplateResponse(
         request=request,
         name="public/account_deletion_confirmation.html",

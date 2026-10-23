@@ -19,6 +19,7 @@ This module owns the "rights" side of the product's data-stewardship story:
 
 from __future__ import annotations
 
+import builtins
 from datetime import UTC, date, datetime
 from enum import Enum
 from typing import Any
@@ -28,12 +29,15 @@ from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.cache.conversation_cache import KEY_PREFIX as CONVERSATION_KEY_PREFIX
+from app.cache.conversation_cache import ConversationCache
 from app.cache.login_rate_limiter import KEY_PREFIX as LOGIN_LOCKOUT_PREFIX
 from app.cache.redis_client import RedisClient
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
 from app.models.agent_action import AgentAction
 from app.models.ai_feedback import AIFeedback
+from app.models.chat_message import ChatMessage
 from app.models.community import (
     CommunityReport,
     DraftComplaint,
@@ -41,7 +45,7 @@ from app.models.community import (
     ReportFlag,
     UserBlock,
 )
-from app.models.consent import CONSENT_TYPES, ConsentRecord
+from app.models.consent import CONSENT_TYPES, ConsentEvent, ConsentRecord
 from app.models.finance import Bill, Budget, Expense, Income
 from app.models.health import Medication, MedicationIntake
 from app.models.logbook import LogEntry
@@ -56,6 +60,7 @@ from app.models.productivity import (
     Reminder,
     Task,
 )
+from app.models.promo_redemption import PromoRedemption
 from app.models.purchase_event import PurchaseEvent
 from app.models.roadmap_day import RoadmapDay
 from app.models.study import Flashcard, FlashcardDeck, FlashcardReview, StudyPlan
@@ -113,6 +118,24 @@ class ConsentService:
             for record in result.scalars().all()
         ]
 
+    async def history(self, user_id: int) -> builtins.list[dict[str, Any]]:
+        """Return the immutable consent event history for one user."""
+        stmt = (
+            select(ConsentEvent)
+            .where(ConsentEvent.user_id == user_id)
+            .order_by(ConsentEvent.occurred_at, ConsentEvent.id)
+        )
+        result = await self.session.execute(stmt)
+        return [
+            {
+                "type": event.type,
+                "action": event.action,
+                "version": event.version,
+                "occurred_at": event.occurred_at.isoformat(),
+            }
+            for event in result.scalars().all()
+        ]
+
     async def record(
         self,
         user_id: int,
@@ -139,10 +162,21 @@ class ConsentService:
         if existing is None:
             record = ConsentRecord(user_id=user_id, type=consent_type, version=version, accepted_at=accepted_at)
             self.session.add(record)
+            action = "granted"
         else:
             existing.version = version
             existing.accepted_at = accepted_at
             record = existing
+            action = "reaffirmed"
+        self.session.add(
+            ConsentEvent(
+                user_id=user_id,
+                type=consent_type,
+                action=action,
+                version=version,
+                occurred_at=accepted_at,
+            )
+        )
         if commit:
             await self.session.commit()
         else:
@@ -158,12 +192,35 @@ class ConsentService:
         """
         if consent_type not in CONSENT_TYPES:
             raise HTTPException(status_code=400, detail=f"Tipo de consentimento desconhecido: '{consent_type}'.")
+        existing = (
+            await self.session.execute(
+                select(ConsentRecord).where(
+                    ConsentRecord.user_id == user_id, ConsentRecord.type == consent_type
+                )
+            )
+        ).scalar_one_or_none()
         result = await self.session.execute(
             delete(ConsentRecord).where(
                 ConsentRecord.user_id == user_id, ConsentRecord.type == consent_type
             )
         )
         deleted = getattr(result, "rowcount", 0) > 0
+        if deleted and existing is not None:
+            if consent_type == "learning":
+                profile = (
+                    await self.session.execute(select(UserAgent).where(UserAgent.user_id == user_id))
+                ).scalar_one_or_none()
+                if profile is not None:
+                    profile.learning_enabled = False
+            self.session.add(
+                ConsentEvent(
+                    user_id=user_id,
+                    type=consent_type,
+                    action="withdrawn",
+                    version=existing.version,
+                    occurred_at=datetime.now(UTC),
+                )
+            )
         if commit:
             await self.session.commit()
         return deleted
@@ -210,9 +267,15 @@ class ExportRateLimiter:
 class AccountExportService:
     """Assemble a portable JSON bundle of one user's data."""
 
-    def __init__(self, session: AsyncSession, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        settings: Settings | None = None,
+        redis_client: RedisClient | None = None,
+    ) -> None:
         self.session = session
         self.settings = settings or get_settings()
+        self.redis_client = redis_client or RedisClient(self.settings)
 
     async def build_bundle(self, user_id: int) -> dict[str, Any]:
         """Return the user's complete, pre-serialized data bundle.
@@ -255,6 +318,19 @@ class AccountExportService:
         feedback_rows = (await self.session.execute(
             select(AIFeedback).where(AIFeedback.user_id == user_id).order_by(AIFeedback.created_at)
         )).scalars().all()
+        chat_messages = (await self.session.execute(
+            select(ChatMessage).where(ChatMessage.user_id == user_id).order_by(ChatMessage.created_at)
+        )).scalars().all()
+        promo_redemptions = (await self.session.execute(
+            select(PromoRedemption).where(PromoRedemption.user_id == user_id).order_by(PromoRedemption.redeemed_at)
+        )).scalars().all()
+
+        conversation_cache = ConversationCache(self.redis_client)
+        conversation_keys = await self.redis_client.scan_keys(ConversationCache.key_pattern(user_id))
+        conversations: dict[str, list[dict[str, str]]] = {}
+        for key in conversation_keys:
+            agent = key[len(CONVERSATION_KEY_PREFIX) :].rsplit(":", 1)[0]
+            conversations[agent] = await conversation_cache.get_messages(agent, user_id)
 
         productivity = await self._productivity_bundle(user_id)
         health = await self._health_bundle(user_id)
@@ -276,6 +352,7 @@ class AccountExportService:
                     "created_at": user.created_at,
                 },
                 "consents": await ConsentService(self.session, self.settings).list(user_id),
+                "consent_history": await ConsentService(self.session, self.settings).history(user_id),
                 "objectives": [
                     {
                         "id": objective.id,
@@ -345,6 +422,26 @@ class AccountExportService:
                         "created_at": row.created_at,
                     }
                     for row in feedback_rows
+                ],
+                "chat_messages": [
+                    {
+                        "message_id": row.message_id,
+                        "agent": row.agent,
+                        "created_at": row.created_at,
+                    }
+                    for row in chat_messages
+                ],
+                "conversations": conversations,
+                "promo_redemptions": [
+                    {
+                        "source": row.source,
+                        "plan": row.plan,
+                        "bonus_messages": row.bonus_messages,
+                        "granted_until": row.granted_until,
+                        "reason": row.reason,
+                        "redeemed_at": row.redeemed_at,
+                    }
+                    for row in promo_redemptions
                 ],
                 "subscription": None
                 if subscription is None
@@ -871,6 +968,7 @@ class AccountDeletionService:
         ``ON DELETE SET NULL``/FK pass is ever forced to fight a constraint.
         """
         s = self.session
+        await s.execute(delete(ConsentEvent).where(ConsentEvent.user_id == user_id))
         await s.execute(delete(ConsentRecord).where(ConsentRecord.user_id == user_id))
 
         objective_ids = select(Objective.id).where(Objective.user_id == user_id)
