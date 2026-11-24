@@ -165,7 +165,36 @@ def test_system_prompt_instructs_agent_role() -> None:
         )
 
         assert ai_client.system_prompt is not None
-        assert "Agente Geral" in ai_client.system_prompt
+        assert "companheiro" in ai_client.system_prompt
+        assert '"MeuAgente"' in ai_client.system_prompt
+        assert "desenvolvido pela NovaIAX" in ai_client.system_prompt
+        assert "NÃO conduza a conversa para objetivos" in ai_client.system_prompt
+
+    asyncio.run(_run(scenario))
+
+
+def test_small_talk_does_not_carry_objectives_context() -> None:
+    """The companion only sees goals when the user brings them up."""
+
+    async def scenario(session) -> None:
+        user = await _create_user(session)
+        await _create_objective(session, user.id)
+        ai_client = RecordingAIClient()
+        service = GeneralAgentService(
+            session,
+            ai_client=ai_client,
+            conversation_cache=make_conversation_cache(),
+        )
+
+        await service.create_completion(
+            GeneralAgentCommand(user_message="Tive um dia cansativo hoje, só queria conversar"),
+            user_id=user.id,
+        )
+
+        assert ai_client.messages is not None
+        last = ai_client.messages[-1]["content"]
+        assert "Aprender FastAPI" not in last
+        assert "OBJETIVOS DO USUÁRIO" not in last
 
     asyncio.run(_run(scenario))
 

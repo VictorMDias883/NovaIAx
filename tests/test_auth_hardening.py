@@ -658,10 +658,12 @@ def test_every_registered_operation_is_classified_and_auth_guarded(monkeypatch: 
             )
         if logical_path == "/account-deletion/request":
             client.get("/account-deletion")
+            # A separate address: the deletion form shares the login lockout
+            # counter, so reusing the admin-login address would trip it.
             return client.post(
                 path,
                 data={
-                    "email": "missing@example.invalid",
+                    "email": "missing-deletion@example.invalid",
                     "password": "wrong-password",
                     "csrf_token": client.cookies.get("novaiax_public_csrf", ""),
                 },

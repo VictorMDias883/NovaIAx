@@ -31,6 +31,7 @@ from app.api.v1.app_config_router import router as app_config_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.cache_router import router as cache_router
 from app.api.v1.chat_router import router as chat_router
+from app.api.v1.community_groups_router import router as community_groups_router
 from app.api.v1.community_router import router as community_router
 from app.api.v1.device_agent_router import router as device_agent_router
 from app.api.v1.finance_router import router as finance_router
@@ -78,4 +79,5 @@ router.include_router(finance_router, dependencies=[Depends(get_current_user)])
 router.include_router(study_router, dependencies=[Depends(get_current_user)])
 router.include_router(logbook_router, dependencies=[Depends(get_current_user)])
 router.include_router(community_router, dependencies=[Depends(get_current_user)])
+router.include_router(community_groups_router, dependencies=[Depends(get_current_user)])
 router.include_router(privacy_router, dependencies=[Depends(get_current_user)])

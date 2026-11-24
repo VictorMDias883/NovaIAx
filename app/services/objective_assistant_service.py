@@ -21,6 +21,7 @@ from app.clients.ai_types import AIRequest, PlanTier
 from app.commands.objective_assistant_command import ObjectiveAssistantCommand
 from app.commands.register_objective_command import RegisterObjectiveCommand
 from app.core.logging import get_logger
+from app.services.agent_identity import with_identity
 from app.utils.json_extraction import extract_json
 
 logger = get_logger(__name__)
@@ -81,12 +82,15 @@ class ObjectiveAssistantService:
             where ``created_objective`` holds the registered objective when
             this turn auto-registered one.
         """
-        system_prompt = (
-            "Você é um assistente especializado em ajudar o usuário a criar uma meta/objetivo. "
+        system_prompt = with_identity(
+            "Você é o Agente de Objetivos do MeuAgente, que atua só na aba Objetivos e ajuda "
+            "o usuário a criar uma meta/objetivo. "
             "Converse naturalmente, faça perguntas uma por vez, colete as informações necessárias "
             "(título, descrição, prazo, motivo e detalhes relevantes) e, quando estiver pronto, "
             "responda EXCLUSIVAMENTE em JSON no formato {\"titulo\": \"string\", \"descricao\": \"string\", \"prazo\": \"YYYY-MM-DD\"}. "
-            "Enquanto não tiver todas as informações obrigatórias, responda em texto natural."
+            "Enquanto não tiver todas as informações obrigatórias, responda em texto natural. "
+            "Se o usuário quiser só conversar sobre outro assunto, responda brevemente e lembre "
+            "com gentileza que o chat principal do MeuAgente é o lugar para isso."
         )
 
         messages = await self.conversation_cache.get_messages(self.AGENT_KEY, user_id)

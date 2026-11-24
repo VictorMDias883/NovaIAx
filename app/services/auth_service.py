@@ -37,6 +37,7 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
     pwd_context,
+    spend_password_check,
 )
 from app.exceptions.api_errors import APIError, APIErrorCode
 from app.models.consent import DEFAULT_CONSENT_TYPES
@@ -310,6 +311,8 @@ class AuthService:
 
         repo = UserRepository(self.session)
         user = await repo.get_by_email(command.email)
+        if user is None:
+            spend_password_check(command.password)
         if not user or not pwd_context.verify(command.password, user.password_hash):
             await self.login_rate_limiter.on_failure(command.email, client_ip)
             logger.info("Failed login attempt")

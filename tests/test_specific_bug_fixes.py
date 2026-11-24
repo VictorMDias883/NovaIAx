@@ -68,6 +68,24 @@ def _register(client: TestClient, email: str) -> dict:
     return resp.json()
 
 
+def _register_operator(client: TestClient, email: str) -> dict:
+    """Register, promote to ADMIN and log in again (the role lives in the JWT).
+
+    The gateway proxy is restricted to operators and service keys.
+    """
+    _register(client, email)
+
+    async def _promote() -> None:
+        async with SessionLocal() as session:
+            await session.execute(update(User).where(User.email == email).values(role=UserRole.ADMIN))
+            await session.commit()
+
+    asyncio.run(_promote())
+    resp = client.post("/api/v1/auth/login", json={"email": email, "password": _PASSWORD})
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -272,8 +290,8 @@ def test_proxy_cache_is_scoped_per_user(
     monkeypatch.setattr("httpx.AsyncClient", lambda *a, **k: downstream)
     _force_memory_redis(monkeypatch)
 
-    user_a = _register(client, _unique_email("proxy-a"))
-    user_b = _register(client, _unique_email("proxy-b"))
+    user_a = _register_operator(client, _unique_email("proxy-a"))
+    user_b = _register_operator(client, _unique_email("proxy-b"))
     token_a, token_b = _auth(user_a["access_token"]), _auth(user_b["access_token"])
 
     first = client.get("/api/v1/proxy/ai/chat", headers=token_a)
@@ -305,7 +323,7 @@ def test_proxy_cache_preserves_binary_body(
     monkeypatch.setattr("httpx.AsyncClient", lambda *a, **k: downstream)
     _force_memory_redis(monkeypatch)
 
-    user = _register(client, _unique_email("proxy-bin"))
+    user = _register_operator(client, _unique_email("proxy-bin"))
     token = _auth(user["access_token"])
 
     fresh = client.get("/api/v1/proxy/ai/blob", headers=token)
@@ -316,3 +334,10 @@ def test_proxy_cache_preserves_binary_body(
     assert cached.headers.get("x-cache") == "HIT"
     assert cached.content == payload, "binary body must survive the cache round-trip"
     assert downstream.calls == 1
+
+
+def test_proxy_is_closed_to_regular_app_users(client: TestClient) -> None:
+    """End users never call the gateway proxy, so it must not open internal services to them."""
+    user = _register(client, _unique_email("proxy-user"))
+    response = client.get("/api/v1/proxy/ai/chat", headers=_auth(user["access_token"]))
+    assert response.status_code == 403

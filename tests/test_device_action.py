@@ -171,6 +171,7 @@ ALL_ACTIONS: list[tuple[dict[str, Any], bool, bool]] = [
     ({"type": "COMPOSE_MESSAGE", "params": {"app": "whatsapp", "contact_name": "Ana", "text": "oi"}}, True, True),
     ({"type": "SET_ALARM", "params": {"hour": 7, "minute": 5}}, False, False),
     ({"type": "SET_TIMER", "params": {"seconds": 600, "label": "pão"}}, False, False),
+    ({"type": "SHOW_ALARMS", "params": {}}, False, False),
     (
         {
             "type": "CREATE_CALENDAR_EVENT",
@@ -192,7 +193,7 @@ def test_the_specified_whitelist_is_covered_exactly() -> None:
     # but is answered in the reply, so it is never returned as an action.
     declared = {action["type"] for action, _, _ in ALL_ACTIONS}
     assert declared == {t.value for t in DeviceActionType} - {"WHAT_IS_PENDING_TODAY"}
-    assert len(ALL_ACTIONS) == 14
+    assert len(ALL_ACTIONS) == 15
     assert set(REQUIRES_CONFIRMATION) == set(DeviceActionType)
     assert {DeviceActionType.DIAL, DeviceActionType.COMPOSE_MESSAGE} == PREPARES_ONLY
 

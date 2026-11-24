@@ -31,3 +31,16 @@ class UpdateUserMemoryCommand:
 
     value: str | None = None
     enabled: bool | None = None
+
+
+@dataclass(frozen=True)
+class SaveGroupProfileCommand:
+    """Immutable command carrying answers to a group's profile questions.
+
+    Attributes:
+        group_slug: The audience group whose questions are answered.
+        answers: Question key → answer; a blank answer erases the stored one.
+    """
+
+    group_slug: str
+    answers: dict[str, str]

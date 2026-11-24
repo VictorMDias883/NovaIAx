@@ -160,6 +160,10 @@ def _retry_after_seconds(value: str | None) -> float | None:
     return max((parsed - datetime.now(UTC)).total_seconds(), 0.0)
 
 
+#: Rough token cost of one attached image (vision models tile the picture).
+_IMAGE_TOKEN_ESTIMATE = 1500
+
+
 def _estimate_payload_tokens(payload: dict[str, Any], max_output_tokens: int) -> int:
     """Approximate the tokens (input + capped output) a request will consume.
 
@@ -175,7 +179,15 @@ def _estimate_payload_tokens(payload: dict[str, Any], max_output_tokens: int) ->
             if not isinstance(message, dict):
                 continue
             content = message.get("content", "")
-            if content is not None:
+            if isinstance(content, list):
+                # Multimodal turn: count the text parts; an image is billed by
+                # the provider as a fixed-size tile, not by its base64 length.
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        chars += _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
+                    elif isinstance(part, dict):
+                        chars += len(str(part.get("text", "")))
+            elif content is not None:
                 chars += len(str(content))
     input_tokens = chars // _CHARS_PER_TOKEN + 4 * (len(messages) if isinstance(messages, list) else 0)
     return input_tokens + max(0, max_output_tokens)
@@ -324,7 +336,7 @@ class AIClient(ABC):
     async def create_chat_completion_with_history(
         self,
         system_prompt: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
     ) -> str:
         """Create a chat completion including prior conversation history.
 
@@ -435,7 +447,7 @@ class OpenAICompatibleClient(AIClient):
     async def create_chat_completion_with_history(
         self,
         system_prompt: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         model: str | None = None,
     ) -> str:
@@ -451,7 +463,7 @@ class OpenAICompatibleClient(AIClient):
         )
 
     def _build_payload(
-        self, messages: list[dict[str, str]], *, model: str | None = None
+        self, messages: list[dict[str, Any]], *, model: str | None = None
     ) -> dict[str, Any]:
         """Build the outgoing request body, always bounding the output length.
 

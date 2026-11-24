@@ -236,6 +236,9 @@ class AIRouter:
                 fallback_reasons.append((name, "disabled"))
                 logger.info("ai_provider_skipped", extra={"provider": name, "reason": "disabled"})
                 continue
+            if request.image_data_url and not route.config.vision_model:
+                fallback_reasons.append((name, "no_vision_model"))
+                continue
             if route.breaker.is_open():
                 ai_metrics.provider(name).record_skip()
                 fallback_reasons.append((name, "breaker_open"))
@@ -293,6 +296,8 @@ class AIRouter:
         message content.
         """
         model = self._model_selector.select(route.config, request)
+        if request.image_data_url and route.config.vision_model:
+            model = route.config.vision_model
         client = route.client
         # The platform-owned safety preamble is prepended here, after the
         # admin-authored prompt has been loaded, so no admin prompt can remove
@@ -300,7 +305,11 @@ class AIRouter:
         # left untouched.
         system_prompt = with_safety_preamble(request.system_prompt)
         started = time.monotonic()
-        if request.history:
+        if request.image_data_url:
+            text = await client.create_chat_completion_with_history(
+                system_prompt, with_image(request, user_message), model=model
+            )
+        elif request.history:
             text = await client.create_chat_completion_with_history(
                 system_prompt, request.history, model=model
             )
@@ -318,6 +327,8 @@ class AIRouter:
                 user_message=user_message,
                 max_output_tokens=route.config.max_output_tokens,
             )
+            if request.image_data_url:
+                estimated += IMAGE_TOKEN_COST
             await self._quota_tracker.record_usage(
                 request.user_id, tokens_used=estimated, plan_tier=request.plan_tier
             )
@@ -352,6 +363,31 @@ def build_ai_router(settings: Settings, cache: RedisClient) -> AIRouter:
     )
 
 
+#: Tokens charged to the daily quota for one analysed image.
+IMAGE_TOKEN_COST = 1500
+
+
+def with_image(request: AIRequest, user_message: str) -> list[dict[str, Any]]:
+    """History whose last user turn carries ``request.image_data_url``.
+
+    The prior turns stay plain text; only the current turn becomes an
+    OpenAI-style multimodal message (text part + ``image_url`` part).
+    """
+    history: list[dict[str, Any]] = list(request.history)
+    if history and history[-1].get("role") == "user":
+        history.pop()
+    history.append(
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": user_message},
+                {"type": "image_url", "image_url": {"url": request.image_data_url}},
+            ],
+        }
+    )
+    return history
+
+
 async def run_ai_request(client: Any, request: AIRequest) -> AIResponse:
     """Serve one request through a router or a legacy single-provider client.
 
@@ -364,7 +400,11 @@ async def run_ai_request(client: Any, request: AIRequest) -> AIResponse:
     """
     if isinstance(client, AIRouter):
         return await client.complete(request)
-    if request.history:
+    if request.image_data_url:
+        text = await client.create_chat_completion_with_history(
+            request.system_prompt, with_image(request, request.user_message)
+        )
+    elif request.history:
         text = await client.create_chat_completion_with_history(
             request.system_prompt, request.history
         )

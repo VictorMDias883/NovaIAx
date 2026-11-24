@@ -463,7 +463,7 @@ def test_general_agent_context_uses_one_batched_day_query(monkeypatch) -> None:
             ai_client=DummyAIClient(),  # type: ignore[arg-type]
             conversation_cache=make_conversation_cache(),
         )
-        await service.create_completion(GeneralAgentCommand(user_message="oi"), user.id)
+        await service.create_completion(GeneralAgentCommand(user_message="como estão meus objetivos?"), user.id)
 
     asyncio.run(_run(scenario))
 

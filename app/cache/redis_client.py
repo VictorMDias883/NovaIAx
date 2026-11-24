@@ -205,6 +205,10 @@ class InMemoryStore:
             members.difference_update(values)
 
 
+class RedisUnavailableError(RuntimeError):
+    """Raised by a fail-closed :class:`RedisClient` when Redis cannot be used."""
+
+
 class RedisClient:
     """High-level Redis client with automatic fallback.
 
@@ -228,14 +232,19 @@ class RedisClient:
     # tests (see :meth:`reset_all_memory_stores`).
     _instances: list["RedisClient"] = []
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, *, fail_closed: bool = False) -> None:
         """Initialise the client.
 
         Args:
             settings: Optional :class:`Settings` instance.  If omitted,
                 the global singleton is used.
+            fail_closed: Raise :class:`RedisUnavailableError` instead of
+                silently switching to the per-process memory store.  For
+                security state (revoked tokens) a memory fallback is worse than
+                an error: it starts empty, so revoked tokens become valid again.
         """
         self.settings = settings or get_settings()
+        self.fail_closed = fail_closed
         self._client: Any | None = None
         self._memory_store = InMemoryStore()
         RedisClient._instances.append(self)
@@ -279,12 +288,10 @@ class RedisClient:
         global _last_redis_attempt
         tries = None if redis_async is None else _last_redis_attempt
         if redis_async is None:
-            self._client = self._memory_store
-            return self._client
+            return self._fall_back()
         now = time.monotonic()
-        if tries is not None and now - tries < _REDIS_RETRY_COOLDOWN_SECONDS:
-            self._client = self._memory_store
-            return self._client
+        if tries is not None and now - tries < _REDIS_RETRY_COOLDOWN_SECONDS and not self.fail_closed:
+            return self._fall_back()
 
         _last_redis_attempt = now
         try:
@@ -292,11 +299,19 @@ class RedisClient:
             # A short ping ensures the server is reachable so tests do not
             # hang if Redis is unavailable or unresponsive.
             await asyncio.wait_for(candidate.ping(), timeout=0.5)
-        except Exception:
+        except Exception as exc:
+            if self.fail_closed:
+                raise RedisUnavailableError("Redis unavailable") from exc
             logger.warning("Redis unavailable - falling back to in-memory store")
-            self._client = self._memory_store
-            return self._client
+            return self._fall_back()
         self._client = candidate
+        return self._client
+
+    def _fall_back(self) -> Any:
+        """Switch to the in-memory store, unless this client is fail-closed."""
+        if self.fail_closed:
+            raise RedisUnavailableError("Redis unavailable")
+        self._client = self._memory_store
         return self._client
 
     async def _run(self, method: str, *args: Any, **kwargs: Any) -> Any:
@@ -313,7 +328,10 @@ class RedisClient:
             return await getattr(self._memory_store, method)(*args, **kwargs)
         try:
             return await getattr(client, method)(*args, **kwargs)
-        except Exception:
+        except Exception as exc:
+            if self.fail_closed:
+                self._client = None  # reconnect on the next call
+                raise RedisUnavailableError(f"Redis operation failed ({method})") from exc
             logger.exception("Redis operation failed - retrying with in-memory store (%s)", method)
             self._client = self._memory_store
             return await getattr(self._memory_store, method)(*args, **kwargs)

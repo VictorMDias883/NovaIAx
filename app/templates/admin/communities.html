@@ -1,0 +1,112 @@
+{% extends "admin/base.html" %}
+{% import "admin/macros.html" as ui %}
+{% block title %}Comunidades{% endblock %}
+{% block content %}
+<h1>Comunidades</h1>
+{{ ui.flashes(message, error) }}
+
+<h2>Conteúdo denunciado ou em moderação</h2>
+{% set items = queue.posts + queue.comments %}
+{% if items %}
+<table>
+  <thead>
+    <tr><th>Tipo</th><th>Conteúdo</th><th>Autor</th><th>Denúncias</th><th>Situação</th><th>Ações</th></tr>
+  </thead>
+  <tbody>
+    {% for item in items %}
+    <tr>
+      <td>{{ 'Publicação' if item.kind == 'post' else 'Comentário' }} #{{ item.id }}{% if item.group %}<p class="muted">{{ item.group }}</p>{% endif %}</td>
+      <td>
+        <p>{{ item.body }}</p>
+        {% for reason in item.reasons %}<p class="muted">Motivo: {{ reason }}</p>{% endfor %}
+      </td>
+      <td>{{ item.nickname }} (#{{ item.author_id }})</td>
+      <td>{{ item.flags }}</td>
+      <td>
+        {% if item.removed %}<span class="role-badge role-admin">REMOVIDO</span>
+        {% elif item.hidden %}<span class="role-badge role-admin">OCULTO</span>
+        {% else %}<span class="role-badge role-user">VISÍVEL</span>{% endif %}
+      </td>
+      <td>
+        <div class="actions-cell">
+          {% if not item.removed %}
+          <form method="post" action="/admin/communities/content/{{ item.kind }}/{{ item.id }}" class="inline"
+                data-confirm="Remover este conteúdo? Ele ficará visível apenas para o autor.">
+            {{ ui.csrf_field(csrf_token) }}
+            <input type="hidden" name="action" value="remove">
+            <button type="submit" class="btn btn-sm btn-danger">Remover</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/admin/communities/content/{{ item.kind }}/{{ item.id }}" class="inline">
+            {{ ui.csrf_field(csrf_token) }}
+            <input type="hidden" name="action" value="restore">
+            <button type="submit" class="btn btn-sm">Restaurar e limpar denúncias</button>
+          </form>
+        </div>
+        <p class="muted">Para impedir o autor de publicar, use Usuários → banir da comunidade.</p>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Nenhum conteúdo denunciado.</p>
+{% endif %}
+
+<h2>Grupos</h2>
+<table>
+  <thead>
+    <tr><th>Grupo</th><th>Acesso</th><th>Membros</th><th>Pedidos</th><th>Situação</th><th>Moderador</th></tr>
+  </thead>
+  <tbody>
+    {% for group in groups %}
+    <tr>
+      <td>{{ group.icon }} <strong>{{ group.name }}</strong><p class="muted">{{ group.slug }}</p></td>
+      <td>{{ group.access }}{% if group.audience_slug %}<p class="muted">público: {{ group.audience_slug }}</p>{% endif %}</td>
+      <td>{{ group.member_count }}</td>
+      <td>{{ group.pending }}</td>
+      <td>
+        <form method="post" action="/admin/communities/groups/{{ group.id }}/active" class="inline">
+          {{ ui.csrf_field(csrf_token) }}
+          <input type="hidden" name="active" value="{{ '0' if group.active else '1' }}">
+          <button type="submit" class="btn btn-sm {{ 'btn-danger' if group.active else '' }}">
+            {{ 'Desativar' if group.active else 'Ativar' }}
+          </button>
+        </form>
+      </td>
+      <td>
+        <form method="post" action="/admin/communities/groups/{{ group.id }}/moderators" class="inline">
+          {{ ui.csrf_field(csrf_token) }}
+          <input type="number" name="user_id" min="1" placeholder="ID do usuário" required style="width:9em">
+          <select name="moderator">
+            <option value="1">Tornar moderador</option>
+            <option value="0">Remover moderação</option>
+          </select>
+          <button type="submit" class="btn btn-sm">Salvar</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Nova comunidade</h2>
+<form method="post" action="/admin/communities/groups" class="stack">
+  {{ ui.csrf_field(csrf_token) }}
+  <label>Identificador (ex.: enfermeiros) <input name="slug" required maxlength="80"></label>
+  <label>Nome <input name="name" required maxlength="120"></label>
+  <label>Descrição <textarea name="description" required rows="2"></textarea></label>
+  <label>Ícone (emoji) <input name="icon" value="💬" maxlength="50"></label>
+  <label>Acesso
+    <select name="access">
+      {% for access in accesses %}<option value="{{ access }}">{{ access }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>Público exigido (slug do grupo de agente; obrigatório se o acesso não for "open")
+    <input name="audience_slug" maxlength="80">
+  </label>
+  <label>Ordem <input type="number" name="sort_order" value="100"></label>
+  <button type="submit" class="btn">Criar comunidade</button>
+</form>
+<p class="muted">open = qualquer pessoa · audience = só quem ativou o público em "Agentes por público" · approval = público + aprovação de moderador.</p>
+{% endblock %}

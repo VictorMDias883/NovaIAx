@@ -41,6 +41,20 @@ class SubscriptionRepository:
         )
         return result.scalar_one_or_none()
 
+    async def token_owned_by_other_user(self, token_hash: str, user_id: int) -> bool:
+        """Return whether another account already holds this purchase token.
+
+        A Play purchase token belongs to exactly one NovaIAx account; letting a
+        second account verify it would hand one paid subscription to many users.
+        """
+        result = await self.session.execute(
+            select(Subscription.id)
+            .where(Subscription.purchase_token_hash == token_hash)
+            .where(Subscription.user_id != user_id)
+            .limit(1)
+        )
+        return result.first() is not None
+
     def add(self, subscription: Subscription) -> None:
         """Stage a new subscription for insertion."""
         self.session.add(subscription)

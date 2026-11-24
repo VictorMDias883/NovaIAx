@@ -26,8 +26,13 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.clients.plan_limits import FEATURE_GROUPS, FEATURE_SUB_AGENTS, PLAN_RANK
-from app.commands.agent_memory_commands import CreateUserMemoryCommand, UpdateUserMemoryCommand
+from app.commands.agent_memory_commands import (
+    CreateUserMemoryCommand,
+    SaveGroupProfileCommand,
+    UpdateUserMemoryCommand,
+)
 from app.commands.update_agent_profile_command import UpdateAgentProfileCommand
+from app.db.group_profile_questions import PROFILE_ANSWER_MAX_LENGTH, ProfileQuestion, questions_for
 from app.models.agent_group import AgentGroup
 from app.models.sub_agent import SubAgent
 from app.models.user_agent import UserAgent
@@ -210,6 +215,61 @@ class AgentPersonalizationService:
         """Delete a memory; return whether a row was actually removed."""
         async with self.session.begin():
             return await self.memory_repo.delete(user_id, key)
+
+    async def delete_all_memories(self, user_id: int) -> int:
+        """Delete all of the user's memories; return how many were removed."""
+        async with self.session.begin():
+            return await self.memory_repo.delete_all(user_id)
+
+    # ------------------------------------------------------------------ #
+    # Group profile questions (answers stored as ``perfil_*`` memories)
+    # ------------------------------------------------------------------ #
+    async def _active_group_questions(self, slug: str) -> tuple[ProfileQuestion, ...] | None:
+        """Questions of the active group ``slug``; ``None`` when not listed."""
+        group = await self.catalog_repo.get_active_group(slug)
+        return None if group is None else questions_for(group.slug)
+
+    async def get_group_profile(self, user_id: int, slug: str) -> dict[str, str] | None:
+        """Return the stored answers for ``slug``; ``None`` for an unknown group."""
+        questions = await self._active_group_questions(slug)
+        if questions is None:
+            return None
+        answers: dict[str, str] = {}
+        for question in questions:
+            memory = await self.memory_repo.get(user_id, question.memory_key)
+            if memory is not None:
+                answers[question.key] = memory.value
+        return answers
+
+    async def save_group_profile(self, user_id: int, command: SaveGroupProfileCommand) -> dict[str, str] | None:
+        """Upsert (or erase, when blank) the answers; ``None`` for an unknown group.
+
+        Raises:
+            ValueError: An answer targets a question the group does not have,
+                or is longer than :data:`PROFILE_ANSWER_MAX_LENGTH`.
+        """
+        for raw in command.answers.values():
+            if len(raw.strip()) > PROFILE_ANSWER_MAX_LENGTH:
+                raise ValueError(f"Use no máximo {PROFILE_ANSWER_MAX_LENGTH} caracteres por resposta.")
+
+        async with self.session.begin():
+            questions = await self._active_group_questions(command.group_slug)
+            if questions is None:
+                return None
+            by_key = {question.key: question for question in questions}
+            unknown = sorted(set(command.answers) - set(by_key))
+            if unknown:
+                raise ValueError(f"Pergunta desconhecida para este grupo: {', '.join(unknown)}.")
+            # Memories only reach the prompt once a profile row exists.
+            await self.profile_repo.get_or_create(user_id)
+            for key, raw in command.answers.items():
+                memory_key = by_key[key].memory_key
+                value = raw.strip()
+                if value:
+                    await self.memory_repo.upsert(user_id, memory_key, value)
+                else:
+                    await self.memory_repo.delete(user_id, memory_key)
+        return await self.get_group_profile(user_id, command.group_slug)
 
     # ------------------------------------------------------------------ #
     # Learning toggle

@@ -59,7 +59,7 @@ class AdminDashboardService:
             "open_reports": open_reports,
             "messages_today": messages_today,
             "active_subscriptions": active_by_plan,
-            "active_subscriptions_total": sum(int(item["count"]) for item in active_by_plan),
+            "active_subscriptions_total": sum(int(count) for _plan, count in plan_rows),
         }
 
 

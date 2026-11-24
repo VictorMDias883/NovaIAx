@@ -320,9 +320,19 @@ class CommunityService:
     # Confirmations / flags
     # ------------------------------------------------------------------
     async def _visible_report(self, user_id: int, report_id: int) -> CommunityReport:
+        """Return a report the caller can see, mirroring :meth:`get_report`.
+
+        Confirming or flagging must not work on reports the feed hides from
+        this user (removed, auto-hidden, or written by someone they blocked).
+        """
         report = await self.reports.get(report_id)
         if report is None or report.status is ReportStatus.REMOVED:
             raise HTTPException(status_code=404, detail="Relato não encontrado")
+        if report.user_id != user_id:
+            if report.hidden_at is not None:
+                raise HTTPException(status_code=404, detail="Relato não encontrado")
+            if report.user_id in await self.blocks.list_blocked_ids(user_id):
+                raise HTTPException(status_code=404, detail="Relato não encontrado")
         return report
 
     async def confirm_report(self, user_id: int, report_id: int) -> dict:

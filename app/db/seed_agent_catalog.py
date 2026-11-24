@@ -44,7 +44,8 @@ class SubAgentSeed:
     min_plan: str = "free"
 
 
-#: The 15 seeded audience groups, in catalog order.
+#: The 15 seeded audience groups.  The first six (sort_order 10–60) are the
+#: launch audiences shown first on the "Agentes Pessoais" page.
 GROUPS: tuple[GroupSeed, ...] = (
     GroupSeed(
         slug="maes_solteiras",
@@ -52,7 +53,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Mães que criam os filhos sozinhas e precisam conciliar casa, trabalho e cuidados.",
         icon="👩‍👧",
         audience="Mães solo",
-        sort_order=10,
+        sort_order=40,
         system_prompt=(
             "Você conversa com uma mãe que cria os filhos sozinha. Seja acolhedor, "
             "prático e sem julgamentos; antecipe tarefas domésticas, rotina das "
@@ -65,7 +66,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Pessoas a partir da terceira idade que valorizam clareza, paciência e passos simples.",
         icon="🧓",
         audience="60+",
-        sort_order=20,
+        sort_order=70,
         system_prompt=(
             "Você conversa com uma pessoa idosa. Fale devagar e com frases curtas, "
             "evite jargões, use exemplos do dia a dia, repita orientações com "
@@ -78,7 +79,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Estudantes que precisam de rotina de estudo, provas, cronogramas e técnicas de aprendizado.",
         icon="🎓",
         audience="Todos os níveis",
-        sort_order=30,
+        sort_order=20,
         system_prompt=(
             "Você conversa com um estudante. Ajude a montar cronogramas de estudo, "
             "sugira técnicas de revisão (como repetição espaçada e prática ativa) e "
@@ -91,7 +92,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Pessoas que querem conciliar sua fé e práticas religiosas com a rotina diária.",
         icon="⛪",
         audience="Comunidades religiosas",
-        sort_order=40,
+        sort_order=10,
         system_prompt=(
             "Você conversa com uma pessoa que valoriza a fé. Respeite a espiritualidade "
             "do usuário, apoie a criação de hábitos como oração, leitura e encontros da "
@@ -117,7 +118,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Profissionais que cuidam da casa e da família e precisam de planejamento e reconhecimento.",
         icon="🏠",
         audience="Trabalho doméstico",
-        sort_order=60,
+        sort_order=80,
         system_prompt=(
             "Você conversa com uma profissional do trabalho doméstico. Ajude a "
             "organizar tarefas da casa, rotinas de limpeza, listas e tempo livre e "
@@ -126,16 +127,16 @@ GROUPS: tuple[GroupSeed, ...] = (
     ),
     GroupSeed(
         slug="trabalhadores_turnos",
-        name="Trabalhadores (turnos)",
-        description="Pessoas com rotinas alternadas de dia e noite que precisam cuidar do sono e da energia.",
-        icon="🌙",
-        audience="Turnos e plantões",
-        sort_order=70,
+        name="Trabalhadores",
+        description="Quem trabalha fora — CLT, comércio, indústria, turnos e plantões — e precisa equilibrar rotina, energia e descanso.",
+        icon="👷",
+        audience="CLT, turnos e plantões",
+        sort_order=30,
         system_prompt=(
-            "Você conversa com alguém que trabalha em turnos ou plantões. Respeite "
-            "horários não convencionais, ajude a proteger o sono, a alimentação e o "
-            "descanso entre turnos e adapte qualquer plano ao calendário real de "
-            "trabalho."
+            "Você conversa com um trabalhador. Considere a profissão e o horário de "
+            "trabalho que ele informou, respeite turnos e plantões, ajude a proteger o "
+            "sono, a alimentação e o descanso e adapte qualquer sugestão à jornada "
+            "real de trabalho."
         ),
     ),
     GroupSeed(
@@ -144,7 +145,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Babás e cuidadoras de crianças que querem rotinas, atividades e organização do dia.",
         icon="🍼",
         audience="Babás e cuidadoras",
-        sort_order=80,
+        sort_order=90,
         system_prompt=(
             "Você conversa com uma babá ou cuidadora de crianças. Ofereça atividades "
             "adequadas à idade, rotinas de sono e alimentação e dicas de segurança, "
@@ -157,7 +158,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Pessoas aposentadas que agora têm mais tempo e querem novos hobbies e propósito.",
         icon="🛋️",
         audience="Aposentados",
-        sort_order=90,
+        sort_order=100,
         system_prompt=(
             "Você conversa com uma pessoa aposentada. Ajude a redescobrir hobbies, "
             "manter redes sociais ativas, criar novas rotinas leves e encontrar "
@@ -170,7 +171,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Caminhoneiros que passam longos períodos na estrada e precisam de praticidade.",
         icon="🚛",
         audience="Estrada",
-        sort_order=100,
+        sort_order=110,
         system_prompt=(
             "Você conversa com um caminhoneiro. Ofereça dicas rápidas de descanso, "
             "alimentação na estrada, checklists de viagem e contato com a família "
@@ -183,7 +184,7 @@ GROUPS: tuple[GroupSeed, ...] = (
         description="Profissionais que tocam o próprio negócio e precisam separar trabalho, finanças e vida.",
         icon="💼",
         audience="Autônomos e freelancers",
-        sort_order=110,
+        sort_order=60,
         system_prompt=(
             "Você conversa com um autônomo ou freelancer. Ajude a organizar projetos, "
             "cobranças, propostas, horas trabalhadas e a separar vida pessoal e "

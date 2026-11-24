@@ -7,7 +7,7 @@ the reserved ``auto_`` key prefix and are upserted silently so a repeated
 statement refreshes the fact instead of erroring.
 """
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_memory import UserMemory
@@ -43,6 +43,18 @@ class UserMemoryRepository:
         await self.session.refresh(memory)
         return memory
 
+    async def upsert(self, user_id: int, key: str, value: str, source: str = "user") -> UserMemory:
+        """Create or overwrite (and re-enable) the memory ``key``."""
+        existing = await self.get(user_id, key)
+        if existing is None:
+            return await self.create(user_id, key, value, source=source)
+        existing.value = value
+        existing.source = source
+        existing.enabled = True
+        await self.session.flush()
+        await self.session.refresh(existing)
+        return existing
+
     async def upsert_learned(self, user_id: int, key: str, value: str) -> UserMemory:
         """Create or refresh an auto-learned memory (``source="learned"``).
 
@@ -76,3 +88,8 @@ class UserMemoryRepository:
             return False
         await self.session.delete(memory)
         return True
+
+    async def delete_all(self, user_id: int) -> int:
+        """Delete every memory of ``user_id``; return how many rows were removed."""
+        result = await self.session.execute(delete(UserMemory).where(UserMemory.user_id == user_id))
+        return int(getattr(result, "rowcount", 0) or 0)

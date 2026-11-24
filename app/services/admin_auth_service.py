@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.cache.login_rate_limiter import LoginRateLimiter
 from app.cache.redis_client import RedisClient
 from app.core.config import Settings, get_settings
+from app.core.security import spend_password_check
 from app.models.user import User, UserRole
 from app.repositories.admin_session_repository import AdminSessionRepository
 from app.repositories.user_repository import UserRepository
@@ -94,6 +95,9 @@ class AdminAuthService:
             raise HTTPException(status_code=429, detail=_LOCKED)
 
         user = await self.users.get_by_email(email)
+        if user is None or user.role != UserRole.ADMIN:
+            # Same cost as a real check: timing must not reveal admin accounts.
+            spend_password_check(password)
         valid = user is not None and user.role == UserRole.ADMIN and _password_matches(password, user.password_hash)
         if not valid:
             await self.limiter.on_failure(email, ip)

@@ -24,6 +24,7 @@ class AITaskType(str, Enum):
     CHAT = "chat"
     ROADMAP = "roadmap"
     STRICT_JSON = "strict_json"
+    VISION = "vision"
 
 
 class PlanTier(str, Enum):
@@ -56,6 +57,9 @@ class AIRequest:
             (anonymous / system) bypasses the quota entirely.
         history: Prior ``{"role", "content"}`` turns for multi-turn chats.
             When empty the request is a single-turn completion.
+        image_data_url: Optional ``data:image/...;base64,`` URL attached to
+            the current user turn.  Only providers with a vision model serve
+            it; the others are skipped.
     """
 
     system_prompt: str
@@ -64,6 +68,7 @@ class AIRequest:
     plan_tier: PlanTier = PlanTier.FREE
     user_id: int | str | None = None
     history: list[dict[str, str]] = field(default_factory=list)
+    image_data_url: str | None = None
 
 
 @dataclass(frozen=True)

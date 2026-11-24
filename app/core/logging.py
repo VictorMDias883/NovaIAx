@@ -17,6 +17,7 @@ Key components:
 
 import json
 import logging
+import re
 import sys
 from datetime import UTC, datetime
 
@@ -62,6 +63,26 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(log_record)
 
 
+_SECRET_QUERY = re.compile(r"((?:^|[?&])token=)[^&\s]*", re.IGNORECASE)
+
+
+class RedactQuerySecretsFilter(logging.Filter):
+    """Mask ``?token=`` values in uvicorn access lines.
+
+    Google Pub/Sub push cannot send custom headers, so the RTDN endpoint
+    accepts its shared secret as a query parameter; this keeps that secret
+    out of the access log.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple) and record.args:
+            record.args = tuple(
+                _SECRET_QUERY.sub(r"\1***", arg) if isinstance(arg, str) and "token=" in arg.lower() else arg
+                for arg in record.args
+            )
+        return True
+
+
 def configure_logging() -> None:
     """Configure the root logger for structured JSON output.
 
@@ -78,6 +99,10 @@ def configure_logging() -> None:
     root_logger.handlers = [handler]
     root_logger.setLevel(logging.INFO)
     root_logger.propagate = False
+
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactQuerySecretsFilter) for f in access_logger.filters):
+        access_logger.addFilter(RedactQuerySecretsFilter())
 
 
 def get_logger(name: str) -> logging.Logger:

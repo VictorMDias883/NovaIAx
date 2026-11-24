@@ -292,7 +292,7 @@ def test_objective_with_no_days_is_listed_with_empty_days_and_context() -> None:
 
         agent = GeneralAgentService(session, StubAIClient(), conversation_cache=make_conversation_cache())
         await agent.create_completion(
-            GeneralAgentCommand(user_message="Quantos dias?"),
+            GeneralAgentCommand(user_message="Quantos dias tem meu objetivo?"),
             user_id=user.id,
         )
         assert "nenhum registrado ainda" in (agent.ai_client.last_context or "")

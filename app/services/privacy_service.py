@@ -45,6 +45,13 @@ from app.models.community import (
     ReportFlag,
     UserBlock,
 )
+from app.models.community_group import (
+    CommunityComment,
+    CommunityContentFlag,
+    CommunityMembership,
+    CommunityPost,
+    CommunityProfile,
+)
 from app.models.consent import CONSENT_TYPES, ConsentEvent, ConsentRecord
 from app.models.finance import Bill, Budget, Expense, Income
 from app.models.health import Medication, MedicationIntake
@@ -807,8 +814,60 @@ class AccountExportService:
         drafts = (await self.session.execute(
             select(DraftComplaint).where(DraftComplaint.user_id == user_id).order_by(DraftComplaint.id)
         )).scalars().all()
+        profile = (await self.session.execute(
+            select(CommunityProfile).where(CommunityProfile.user_id == user_id)
+        )).scalar_one_or_none()
+        memberships = (await self.session.execute(
+            select(CommunityMembership).where(CommunityMembership.user_id == user_id).order_by(CommunityMembership.id)
+        )).scalars().all()
+        posts = (await self.session.execute(
+            select(CommunityPost).where(CommunityPost.user_id == user_id).order_by(CommunityPost.id)
+        )).scalars().all()
+        comments = (await self.session.execute(
+            select(CommunityComment).where(CommunityComment.user_id == user_id).order_by(CommunityComment.id)
+        )).scalars().all()
+        content_flags = (await self.session.execute(
+            select(CommunityContentFlag)
+            .where(CommunityContentFlag.user_id == user_id)
+            .order_by(CommunityContentFlag.id)
+        )).scalars().all()
 
         return {
+            "profile": [] if profile is None else [{
+                "nickname": profile.nickname,
+                "city": profile.city,
+                "state": profile.state,
+                "rules_accepted_at": profile.rules_accepted_at,
+            }],
+            "group_memberships": [
+                {"group_id": m.group_id, "role": m.role, "status": m.status, "created_at": m.created_at}
+                for m in memberships
+            ],
+            "posts": [
+                {
+                    "id": post.id,
+                    "group_id": post.group_id,
+                    "kind": post.kind,
+                    "body": post.body,
+                    "city": post.city,
+                    "state": post.state,
+                    "created_at": post.created_at,
+                }
+                for post in posts
+            ],
+            "comments": [
+                {"id": c.id, "post_id": c.post_id, "body": c.body, "created_at": c.created_at}
+                for c in comments
+            ],
+            "content_flags": [
+                {
+                    "target_type": f.target_type,
+                    "target_id": f.target_id,
+                    "reason": f.reason,
+                    "created_at": f.created_at,
+                }
+                for f in content_flags
+            ],
             "reports": [
                 {
                     "id": report.id,
@@ -1056,6 +1115,29 @@ class AccountDeletionService:
         )
         await s.execute(delete(CommunityReport).where(CommunityReport.user_id == user_id))
 
+        # niche communities: flags on/by the user's content, comments, posts.
+        post_ids = select(CommunityPost.id).where(CommunityPost.user_id == user_id)
+        comment_ids = select(CommunityComment.id).where(
+            or_(CommunityComment.user_id == user_id, CommunityComment.post_id.in_(post_ids))
+        )
+        await s.execute(
+            delete(CommunityContentFlag).where(
+                or_(
+                    CommunityContentFlag.user_id == user_id,
+                    (CommunityContentFlag.target_type == "post") & CommunityContentFlag.target_id.in_(post_ids),
+                    (CommunityContentFlag.target_type == "comment") & CommunityContentFlag.target_id.in_(comment_ids),
+                )
+            )
+        )
+        await s.execute(
+            delete(CommunityComment).where(
+                or_(CommunityComment.user_id == user_id, CommunityComment.post_id.in_(post_ids))
+            )
+        )
+        await s.execute(delete(CommunityPost).where(CommunityPost.user_id == user_id))
+        await s.execute(delete(CommunityMembership).where(CommunityMembership.user_id == user_id))
+        await s.execute(delete(CommunityProfile).where(CommunityProfile.user_id == user_id))
+
         await s.execute(delete(UserMemory).where(UserMemory.user_id == user_id))
         await s.execute(delete(UserAgent).where(UserAgent.user_id == user_id))
         await s.execute(delete(AIFeedback).where(AIFeedback.user_id == user_id))
@@ -1072,6 +1154,23 @@ class AccountDeletionService:
     async def _purge_redis_keys(self, user_id: int, email: str) -> dict[str, int]:
         """Remove Redis keys owned by the user (conversations, quotas, locks)."""
         quota_keys = await self.redis_client.scan_keys(f"ai_quota:*:{user_id}:*")
-        await self.redis_client.delete_many([*quota_keys, f"{LOGIN_LOCKOUT_PREFIX}{email.strip().lower()}", f"{ExportRateLimiter.KEY_PREFIX}{user_id}"])
+        # Lockout counters are keyed per (email, IP): ``prefix + email + ":" + ip``.
+        normalized_email = email.strip().lower()
+        # Emails may contain glob characters (``*``, ``?``, ``[``), so the scan
+        # can over-match: keep only keys that start with this exact email.
+        lockout_prefix = f"{LOGIN_LOCKOUT_PREFIX}{normalized_email}:"
+        lockout_keys = [
+            key
+            for key in await self.redis_client.scan_keys(f"{LOGIN_LOCKOUT_PREFIX}*")
+            if key.startswith(lockout_prefix)
+        ]
+        await self.redis_client.delete_many(
+            [
+                *quota_keys,
+                *lockout_keys,
+                f"{LOGIN_LOCKOUT_PREFIX}{normalized_email}",
+                f"{ExportRateLimiter.KEY_PREFIX}{user_id}",
+            ]
+        )
         cleared = await flush_user_cache(self.redis_client, user_id, include_conversations=True)
         return {**cleared, "quota_keys_cleared": len(quota_keys)}

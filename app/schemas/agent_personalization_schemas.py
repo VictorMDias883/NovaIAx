@@ -3,13 +3,22 @@ Pydantic schemas for the agent personalization domain.
 
 Covers the catalog endpoints (``GET /agent-groups``, ``GET /sub-agents``),
 the per-user profile (``GET/PUT /me/agent``), the memory CRUD
-(``GET/POST/PATCH/DELETE /me/memories``) and the learning toggle
-(``PUT /me/learning``).
+(``GET/POST/PATCH/DELETE /me/memories``), the learning toggle
+(``PUT /me/learning``) and the group profile answers
+(``GET/PUT /me/groups/{slug}/profile``).
 """
 
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class ProfileQuestionResponse(BaseModel):
+    """One optional profile question of an audience group."""
+
+    key: str
+    label: str
+    hint: str = ""
 
 
 class AgentGroupResponse(BaseModel):
@@ -21,6 +30,7 @@ class AgentGroupResponse(BaseModel):
     icon: str
     audience: str
     sort_order: int
+    profile_questions: list[ProfileQuestionResponse] = Field(default_factory=list)
 
 
 class SubAgentResponse(BaseModel):
@@ -119,7 +129,31 @@ class LearningUpdate(BaseModel):
     enabled: bool
 
 
+class MemoriesClearedResponse(BaseModel):
+    """Result of ``DELETE /me/memories``."""
+
+    deleted: int
+
+
 class LearningResponse(BaseModel):
     """Response body after toggling learning."""
 
     enabled: bool
+
+
+class GroupProfileUpdate(BaseModel):
+    """Request body for ``PUT /me/groups/{slug}/profile``.
+
+    Maps question keys to answers; a blank answer erases the stored one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    answers: dict[str, str] = Field(max_length=10)
+
+
+class GroupProfileResponse(BaseModel):
+    """The caller's answers to one group's profile questions."""
+
+    slug: str
+    answers: dict[str, str]

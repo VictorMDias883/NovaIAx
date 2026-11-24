@@ -1,11 +1,11 @@
 """
 Service for the general agent.
 
-The general agent is a conversational assistant that has access to the
-authenticated user's objectives and the days of each roadmap window that
-the user has fulfilled. It gathers that data from the database, bundles
-it into a context block appended to the user's message, and lets the AI
-provider answer based on it.
+The general agent is the user's personal companion: an open, natural
+conversation that does not steer towards goals.  Only when a message is
+about objectives/tasks (see :func:`app.services.agent_identity.mentions_objectives`)
+are the user's objectives and roadmap days bundled into a context block
+appended to that message.
 
 This flow is intentionally separate from the objective-assistant (which
 creates goals) and the generic chat completion (which is bound to an
@@ -17,23 +17,55 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.cache.conversation_cache import ConversationCache
 from app.clients.ai_client import AIClient
 from app.clients.ai_router import AIRouter, run_ai_request
-from app.clients.ai_types import AIRequest, PlanTier
+from app.clients.ai_types import AIRequest, AITaskType, PlanTier
 from app.commands.general_agent_command import GeneralAgentCommand
 from app.core.logging import get_logger
 from app.models.roadmap_day import RoadmapDayStatus
 from app.repositories.objective_repository import ObjectiveRepository
 from app.repositories.roadmap_day_repository import RoadmapDayRepository
+from app.services.agent_identity import mentions_objectives, with_identity
 from app.services.agent_prompt_service import (
+    DEFAULT_AGENT_NAME,
     build_personalized_system_prompt,
     load_personalization_context,
     parse_personalization_block,
 )
 from app.services.memory_learning_service import MemoryLearningService
+from app.utils.untrusted import sanitize
 
 logger = get_logger(__name__)
 
+#: Placeholder stored in the conversation history instead of the photo itself
+#: (images are never persisted).
+PHOTO_HISTORY_MARKER = "[📷 Foto enviada]"
+
+#: Question used when the user sends a photo without text.
+DEFAULT_PHOTO_QUESTION = "O que você vê nesta foto? Comente de forma natural."
+
 #: How many objectives are bundled into the context at most.
 OBJECTIVES_CONTEXT_LIMIT = 100
+
+
+def build_companion_prompt(agent_name: str = DEFAULT_AGENT_NAME) -> str:
+    """System prompt of the general agent: a personal companion, not a planner."""
+    name = sanitize(agent_name, max_chars=60).replace('"', "").strip() or DEFAULT_AGENT_NAME
+    return with_identity(
+        f'Você é "{name}", o agente pessoal do usuário no aplicativo MeuAgente. '
+        "Seu papel é ser um companheiro: converse de forma aberta, natural e "
+        "acolhedora, como alguém próximo que escuta, entende o contexto e as "
+        "emoções da pessoa e responde com empatia. Fale sobre qualquer assunto "
+        "do dia a dia que o usuário trouxer.\n"
+        "Responda em português do Brasil, de forma clara e humana, sem listas "
+        "ou formalidade desnecessárias.\n"
+        "NÃO conduza a conversa para objetivos, metas, tarefas, produtividade ou "
+        "planejamento, e não sugira criar objetivos. Só fale disso quando o "
+        "usuário puxar o assunto; nesse caso, um bloco com os objetivos dele "
+        "virá junto da mensagem — use apenas esses dados e não invente "
+        "objetivos, prazos ou dias cumpridos.\n"
+        "Para criar e planejar objetivos existe a aba Objetivos do aplicativo; "
+        "para assuntos especializados existem os Subagentes de IA. Mencione-os "
+        "apenas se o usuário pedir algo que dependa deles."
+    )
 
 
 class GeneralAgentService:
@@ -95,27 +127,21 @@ class GeneralAgentService:
             A dictionary with the assistant's ``assistant_message`` plus the
             ``why`` (reasons) and ``sources`` lists from the marker.
         """
-        objectives = await self._load_objective_context(user_id)
-        context = await self._build_context(objectives)
-
-        system_prompt = (
-            "Você é o Agente Geral da NovaIAx, um assistente que acompanha o "
-            "progresso dos objetivos do usuário. Você tem acesso aos objetivos "
-            "cadastrados e aos dias do roadmap de cada objetivo que o usuário "
-            "já cumpriu. "
-            "Responda em português do Brasil, de forma clara, amigável e objetiva, "
-            "baseando-se APENAS nos dados fornecidos no bloco de contexto. "
-            "Se o usuário perguntar algo que esteja fora dos dados disponíveis "
-            "(ex.: metas não cadastradas ou dias ainda não registrados), "
-            "diga educadamente que não possui essa informação. "
-            "Não invente objetivos, prazos ou cumprimentos."
-        )
         ctx = await load_personalization_context(self.session, user_id)
+        agent_name = ctx.agent_name if ctx is not None else DEFAULT_AGENT_NAME
+        system_prompt = build_companion_prompt(agent_name)
         if ctx is not None:
             system_prompt = build_personalized_system_prompt(system_prompt, ctx)
 
+        # Objectives are not the companion's default topic: their data only
+        # rides along when the user brings goals/tasks up themselves.
+        context = ""
+        if mentions_objectives(command.user_message):
+            objectives = await self._load_objective_context(user_id)
+            context = await self._build_context(objectives)
+
         messages = await self.conversation_cache.get_messages(self.AGENT_KEY, user_id)
-        current_user_message = f"{command.user_message}\n\n{context}"
+        current_user_message = f"{command.user_message}\n\n{context}" if context else command.user_message
         to_send = messages + [{"role": "user", "content": current_user_message}]
 
         assistant = await run_ai_request(
@@ -225,3 +251,60 @@ class GeneralAgentService:
                 lines.append("   Dias do roadmap: nenhum registrado ainda.")
 
         return "\n".join(lines)
+
+    async def analyze_image(
+        self,
+        *,
+        user_id: int,
+        image_data_url: str,
+        question: str | None,
+        plan_tier: PlanTier = PlanTier.FREE,
+    ) -> dict[str, object]:
+        """Answer one turn that carries a photo (camera or gallery).
+
+        The photo goes to a vision-capable model together with the same
+        personalized companion prompt and the recent conversation, so the
+        agent comments on it in context.  The image itself is **never
+        stored**: the history keeps only :data:`PHOTO_HISTORY_MARKER` plus the
+        user's text.  Auto-learning is skipped for photo turns.
+        """
+        ctx = await load_personalization_context(self.session, user_id)
+        agent_name = ctx.agent_name if ctx is not None else DEFAULT_AGENT_NAME
+        system_prompt = build_companion_prompt(agent_name)
+        if ctx is not None:
+            system_prompt = build_personalized_system_prompt(system_prompt, ctx)
+        system_prompt += (
+            "\n\nFOTOS: quando o usuário enviar uma foto, descreva e comente o que "
+            "for relevante para a pergunta. Não identifique pessoas pelo rosto, não "
+            "adivinhe dados sensíveis (saúde, religião, origem) e, se a foto parecer "
+            "mostrar documentos ou dados pessoais, alerte o usuário com cuidado. "
+            "Você não edita imagens."
+        )
+
+        text = (question or "").strip() or DEFAULT_PHOTO_QUESTION
+        messages = await self.conversation_cache.get_messages(self.AGENT_KEY, user_id)
+        assistant = await run_ai_request(
+            self.ai_client,
+            AIRequest(
+                system_prompt=system_prompt,
+                user_message=text,
+                task_type=AITaskType.VISION,
+                plan_tier=plan_tier,
+                user_id=user_id,
+                history=messages + [{"role": "user", "content": text}],
+                image_data_url=image_data_url,
+            ),
+        )
+        assistant_message, why, sources = parse_personalization_block(assistant.text)
+
+        stored_question = f"{PHOTO_HISTORY_MARKER} {question.strip()}" if question and question.strip() else PHOTO_HISTORY_MARKER
+        await self.conversation_cache.save(
+            self.AGENT_KEY,
+            user_id,
+            messages
+            + [
+                {"role": "user", "content": stored_question},
+                {"role": "assistant", "content": assistant_message},
+            ],
+        )
+        return {"assistant_message": assistant_message, "why": why, "sources": sources}

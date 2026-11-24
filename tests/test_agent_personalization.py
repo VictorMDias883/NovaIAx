@@ -301,6 +301,71 @@ def test_list_sub_agents_returns_seeded_entries_with_group_link(client: TestClie
     assert all(item["min_plan"] == "free" for item in sub_agents.values())
 
 
+def test_launch_groups_come_first_and_carry_profile_questions(client: TestClient) -> None:
+    tokens = _register(client)
+    groups = client.get("/api/v1/agent-groups", headers=_auth(tokens["access_token"])).json()
+    assert [group["slug"] for group in groups[:6]] == [
+        "religiosos",
+        "estudantes",
+        "trabalhadores_turnos",
+        "maes_solteiras",
+        "motoristas",
+        "autonomos_freelancers",
+    ]
+    by_slug = {group["slug"]: group for group in groups}
+    worker_keys = [question["key"] for question in by_slug["trabalhadores_turnos"]["profile_questions"]]
+    assert worker_keys == ["profissao", "horario_trabalho", "meio_transporte"]
+    assert by_slug["foco_tdah"]["profile_questions"] == []
+
+
+# ---------------------------------------------------------------------------
+# HTTP: group profile answers
+# ---------------------------------------------------------------------------
+
+
+def test_group_profile_answers_are_saved_as_memories_and_reach_the_prompt(client: TestClient) -> None:
+    tokens = _register(client)
+    headers = _auth(tokens["access_token"])
+    url = "/api/v1/me/groups/motoristas/profile"
+
+    assert client.get(url, headers=headers).json() == {"slug": "motoristas", "answers": {}}
+    resp = client.put(url, headers=headers, json={"answers": {"meio_transporte": " moto ", "tipo_corrida": "entregas"}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answers"] == {"meio_transporte": "moto", "tipo_corrida": "entregas"}
+
+    memories = {m["key"]: m for m in client.get("/api/v1/me/memories", headers=headers).json()}
+    assert memories["perfil_meio_transporte"]["value"] == "moto"
+    assert memories["perfil_meio_transporte"]["source"] == "user"
+
+    # A shared question pre-fills other groups; a blank answer erases it.
+    worker = client.get("/api/v1/me/groups/trabalhadores_turnos/profile", headers=headers).json()
+    assert worker["answers"] == {"meio_transporte": "moto"}
+    resp = client.put(url, headers=headers, json={"answers": {"meio_transporte": "  "}})
+    assert resp.json()["answers"] == {"tipo_corrida": "entregas"}
+
+    user_id = _me_id(client, tokens)
+
+    async def prompt_for_user() -> str:
+        async with SessionLocal() as session:
+            ctx = await load_personalization_context(session, user_id)
+        assert ctx is not None
+        return build_personalized_system_prompt("Base.", ctx)
+
+    assert "perfil_tipo_corrida: entregas" in asyncio.run(prompt_for_user())
+
+
+def test_group_profile_rejects_unknown_groups_and_questions(client: TestClient) -> None:
+    tokens = _register(client)
+    headers = _auth(tokens["access_token"])
+    assert client.get("/api/v1/me/groups/nao-existe/profile", headers=headers).status_code == 404
+    body = {"answers": {"profissao": "x"}}
+    assert client.put("/api/v1/me/groups/nao-existe/profile", headers=headers, json=body).status_code == 404
+    # "profissao" is not a question of the Motoristas group.
+    assert client.put("/api/v1/me/groups/motoristas/profile", headers=headers, json=body).status_code == 422
+    too_long = {"answers": {"meio_transporte": "x" * 201}}
+    assert client.put("/api/v1/me/groups/motoristas/profile", headers=headers, json=too_long).status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # HTTP: profile
 # ---------------------------------------------------------------------------
@@ -546,7 +611,11 @@ def test_chat_prompt_is_personalized_and_why_sources_are_parsed() -> None:
         system_prompt = ai.system_prompts[0]
         assert "Prompt do admin." in system_prompt, "the admin base prompt must be preserved"
         assert "MeuRu" in system_prompt
-        assert "Estudantes" in system_prompt and "Finanças" in system_prompt
+        assert "Estudantes" in system_prompt
+        # A sub-agent chat stays in its own specialty: other active
+        # sub-agents' instructions are not mixed in.
+        assert "Finanças" not in system_prompt
+        assert "desenvolvido pela NovaIAX" in system_prompt
         assert "moradia" in system_prompt and "Moro em Lisboa desde 2020." in system_prompt
         assert "não confiáveis" in system_prompt or "nao confiaveis" in system_prompt
 
@@ -573,7 +642,8 @@ def test_general_agent_prompt_is_personalized_when_a_profile_exists() -> None:
         assert result["why"] != []
         assert result["sources"] == ["estudantes", "auto_moro_lisboa"]
         assert "Guia" in ai.system_prompts[0]
-        assert "Agente Geral da NovaIAx" in ai.system_prompts[0]
+        assert "companheiro" in ai.system_prompts[0]
+        assert '"Guia"' in ai.system_prompts[0]
 
     asyncio.run(_run_real_db(scenario))
 
@@ -649,7 +719,11 @@ def test_chat_without_profile_stays_unpersonalized(
     body = resp.json()
     assert body.pop("message_id")
     assert body == {"assistant_message": "Sem personalização.", "why": [], "sources": []}
-    assert ai.system_prompts == ["Prompt base do chat."]
+    # No personalization section; only the fixed identity/scope rules are added.
+    assert len(ai.system_prompts) == 1
+    assert ai.system_prompts[0].startswith("Prompt base do chat.")
+    assert "[PERSONALIZACAO]" not in ai.system_prompts[0]
+    assert "desenvolvido pela NovaIAX" in ai.system_prompts[0]
 
 
 def test_prompt_builder_merges_groups_sub_agents_and_memories_untrusted() -> None:
@@ -724,3 +798,98 @@ def test_learning_requires_and_stops_withdrawn_consent() -> None:
         assert consent.scalar_one_or_none() is None
 
     asyncio.run(_run_real_db(scenario))
+
+
+# ---------------------------------------------------------------------------
+# Privacy: user A never sees user B's data (memories, history, learning)
+# ---------------------------------------------------------------------------
+
+
+class _HistoryAI(RecordingAI):
+    """Also records the history sent on each turn."""
+
+    def __init__(self, reply: str = "Ok.") -> None:
+        super().__init__(reply)
+        self.histories: list[list[dict[str, str]]] = []
+
+    async def create_chat_completion_with_history(self, system_prompt, messages):  # noqa: ANN001
+        self.histories.append([dict(m) for m in messages])
+        return await super().create_chat_completion_with_history(system_prompt, messages)
+
+
+def test_memories_are_isolated_between_users(client: TestClient) -> None:
+    alice = _auth(_register(client)["access_token"])
+    bob = _auth(_register(client)["access_token"])
+    resp = client.post("/api/v1/me/memories", headers=alice, json={"key": "segredo", "value": "Senha do cofre 1234."})
+    assert resp.status_code == 201, resp.text
+
+    assert all(m["key"] != "segredo" for m in client.get("/api/v1/me/memories", headers=bob).json())
+    assert client.patch("/api/v1/me/memories/segredo", headers=bob, json={"enabled": False}).status_code == 404
+    assert client.delete("/api/v1/me/memories/segredo", headers=bob).status_code == 404
+    assert client.delete("/api/v1/me/memories", headers=bob).json() == {"deleted": 0}
+
+    # Alice's memory survived Bob's attempts; "apagar tudo" clears only hers.
+    assert [m["key"] for m in client.get("/api/v1/me/memories", headers=alice).json()] == ["segredo"]
+    assert client.delete("/api/v1/me/memories", headers=alice).json() == {"deleted": 1}
+    assert client.get("/api/v1/me/memories", headers=alice).json() == []
+
+
+def test_general_chat_never_carries_another_users_memory_or_history(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ai = _HistoryAI()
+    monkeypatch.setattr(app, "dependency_overrides", {**app.dependency_overrides})
+    app.dependency_overrides[get_ai_router] = lambda: ai
+
+    alice = _auth(_register(client)["access_token"])
+    bob = _auth(_register(client)["access_token"])
+    client.put("/api/v1/me/agent", headers=alice, json={"agent_name": "Batman"})
+    client.post("/api/v1/me/memories", headers=alice, json={"key": "pet", "value": "Meu cachorro se chama Rex."})
+    assert client.post(
+        "/api/v1/agents/general/chat", headers=alice, json={"user_message": "Hoje levei o Rex ao parque"}
+    ).status_code == 200
+
+    assert client.post(
+        "/api/v1/agents/general/chat", headers=bob, json={"user_message": "Oi, tudo bem?"}
+    ).status_code == 200
+
+    bob_prompt, bob_history = ai.system_prompts[-1], ai.histories[-1]
+    assert "Rex" not in bob_prompt and "Batman" not in bob_prompt
+    assert all("Rex" not in m["content"] for m in bob_history)
+    assert [m["content"] for m in bob_history if m["role"] == "user"] == ["Oi, tudo bem?"]
+
+
+def test_sub_agents_read_but_do_not_write_the_users_profile(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.services.privacy_service import ConsentService
+
+    ai = _HistoryAI()
+    monkeypatch.setattr(app, "dependency_overrides", {**app.dependency_overrides})
+    app.dependency_overrides[get_ai_router] = lambda: ai
+
+    tokens = _register(client)
+    headers = _auth(tokens["access_token"])
+    user_id = _me_id(client, tokens)
+
+    async def setup() -> int:
+        async with SessionLocal() as session:
+            await ConsentService(session).record(user_id, "learning")
+            prompt = SystemPrompt(tipo=f"pers-{uuid.uuid4().hex[:8]}", system_prompt="Subagente de estudos.")
+            session.add(prompt)
+            await session.commit()
+            await session.refresh(prompt)
+            return int(prompt.id)
+
+    prompt_id = asyncio.run(setup())
+    client.put("/api/v1/me/learning", headers=headers, json={"enabled": True})
+
+    resp = client.post(
+        "/api/v1/ai/chat", headers=headers, json={"agent_id": prompt_id, "user_message": "Eu moro em Lisboa."}
+    )
+    assert resp.status_code == 200, resp.text
+    assert client.get("/api/v1/me/memories", headers=headers).json() == []
+
+    resp = client.post("/api/v1/agents/general/chat", headers=headers, json={"user_message": "Eu moro em Lisboa."})
+    assert resp.status_code == 200, resp.text
+    assert [m["source"] for m in client.get("/api/v1/me/memories", headers=headers).json()] == ["learned"]

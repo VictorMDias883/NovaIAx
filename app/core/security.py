@@ -164,6 +164,22 @@ pwd_context = CryptContext(
 )
 
 
+_dummy_password_hash: str | None = None
+
+
+def spend_password_check(password: str) -> None:
+    """Burn the same PBKDF2 cost as a real verification, for unknown accounts.
+
+    Verifying a real hash takes ~0.3 s (600k rounds) while a missing account
+    would answer instantly, which tells an attacker which e-mails are
+    registered.  Call this on the "no such user" path so both take the same time.
+    """
+    global _dummy_password_hash
+    if _dummy_password_hash is None:
+        _dummy_password_hash = pwd_context.hash(secrets.token_urlsafe(16))
+    pwd_context.verify(password, _dummy_password_hash)
+
+
 # ---------------------------------------------------------------------------
 # API-key service
 # ---------------------------------------------------------------------------

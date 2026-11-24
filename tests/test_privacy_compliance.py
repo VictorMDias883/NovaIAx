@@ -447,6 +447,42 @@ def test_public_delete_form_deletes_with_password(
     assert _login(client, "page-delete@example.com") == 401
 
 
+def test_public_delete_form_locks_out_password_guessing(
+    client: TestClient, created_emails: list[str]
+) -> None:
+    created_emails.append("page-guess@example.com")
+    _register(client, "page-guess@example.com")
+    client.get("/account-deletion")
+    csrf = client.cookies.get("novaiax_public_csrf")
+
+    def _attempt(password: str) -> int:
+        return client.post(
+            "/account-deletion/request",
+            data={"email": "page-guess@example.com", "password": password, "csrf_token": csrf},
+        ).status_code
+
+    for _ in range(5):
+        assert _attempt("WrongPassword1") == 400
+    # Locked: even the right password is refused, so guessing cannot win.
+    assert _attempt(_PASSWORD) == 429
+    # The lockout is shared with the login, so the guesses cannot simply
+    # move over to the other door.
+    assert _login(client, "page-guess@example.com") == 429
+
+
+def test_public_delete_form_caps_email_only_requests(client: TestClient) -> None:
+    client.get("/account-deletion")
+    csrf = client.cookies.get("novaiax_public_csrf")
+    statuses = [
+        client.post(
+            "/account-deletion/request",
+            data={"email": "flood@example.com", "password": "", "csrf_token": csrf},
+        ).status_code
+        for _ in range(4)
+    ]
+    assert statuses == [200, 200, 200, 429]
+
+
 # ---------------------------------------------------------------------------
 # Failed-login lockout
 # ---------------------------------------------------------------------------

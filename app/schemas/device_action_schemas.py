@@ -107,6 +107,7 @@ class DeviceActionType(str, Enum):
     COMPOSE_MESSAGE = "COMPOSE_MESSAGE"
     SET_ALARM = "SET_ALARM"
     SET_TIMER = "SET_TIMER"
+    SHOW_ALARMS = "SHOW_ALARMS"
     CREATE_CALENDAR_EVENT = "CREATE_CALENDAR_EVENT"
     NAVIGATE = "NAVIGATE"
     WEB_SEARCH = "WEB_SEARCH"
@@ -157,6 +158,7 @@ REQUIRES_CONFIRMATION: dict[DeviceActionType, bool] = {
     DeviceActionType.OPEN_SETTINGS_PANEL: False,
     DeviceActionType.SET_ALARM: False,
     DeviceActionType.SET_TIMER: False,
+    DeviceActionType.SHOW_ALARMS: False,
     DeviceActionType.CREATE_CALENDAR_EVENT: False,
     DeviceActionType.NAVIGATE: False,
     DeviceActionType.WEB_SEARCH: False,
@@ -405,6 +407,17 @@ class SetTimerAction(_Action):
     params: SetTimerParams
 
 
+class ShowAlarmsAction(_Action):
+    """Open the clock app's alarm list.
+
+    Android offers no API for another app to list or cancel alarms, so this
+    opens the list where the user sees, edits or turns them off.
+    """
+
+    type: Literal[DeviceActionType.SHOW_ALARMS] = DeviceActionType.SHOW_ALARMS
+    params: NoParams
+
+
 class CreateCalendarEventAction(_Action):
     """Create a calendar event."""
 
@@ -475,6 +488,7 @@ DeviceAction = Annotated[
     | ComposeMessageAction
     | SetAlarmAction
     | SetTimerAction
+    | ShowAlarmsAction
     | CreateCalendarEventAction
     | NavigateAction
     | WebSearchAction

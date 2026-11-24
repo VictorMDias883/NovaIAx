@@ -141,6 +141,8 @@ class AIProviderConfig(BaseModel):
     api_key: str | None = None
     default_model: str = "openai/gpt-oss-120b"
     models: dict[str, str] = Field(default_factory=dict)
+    #: Model that accepts images (``None`` = this provider cannot see images).
+    vision_model: str | None = None
     priority: int = 100
     enabled: bool = True
     timeout_seconds: int = 25
@@ -493,6 +495,10 @@ class Settings(BaseSettings):
     )
     groq_api_model: str = Field(default_factory=lambda: os.getenv("GROQ_API_MODEL", "openai/gpt-oss-120b"))
     groq_api_timeout_seconds: int = _env_int("GROQ_API_TIMEOUT_SECONDS", 25)
+    #: Groq model used for photo analysis (empty disables it).
+    groq_vision_model: str = Field(
+        default_factory=lambda: os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+    )
 
     # --- Groq request budget (keeps AI routes under 60s) ---------------------
     # A request to an AI route can wait twice: once in the process-wide pacer
@@ -771,6 +777,7 @@ class Settings(BaseSettings):
                 max_concurrency=self.groq_max_concurrency,
                 max_attempts=self.groq_max_attempts,
                 max_output_tokens=self.groq_max_output_tokens,
+                vision_model=self.groq_vision_model or None,
             ),
             AIProviderConfig(
                 name="openai",

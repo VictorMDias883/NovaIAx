@@ -132,8 +132,17 @@ async def load_personalization_context(session: AsyncSession, user_id: int) -> P
     )
 
 
-def build_personalized_system_prompt(base_prompt: str, ctx: PersonalizationContext) -> str:
+def build_personalized_system_prompt(
+    base_prompt: str,
+    ctx: PersonalizationContext,
+    *,
+    include_sub_agents: bool = True,
+) -> str:
     """Append the personalization section (and instructions) to ``base_prompt``.
+
+    ``include_sub_agents=False`` is used when the base prompt already *is* a
+    specialist sub-agent: other specialties' instructions would pull it out of
+    its own scope.
 
     The base prompt is returned unchanged when ``ctx`` holds no persisted
     personalization, so an unpersonalised turn is byte-identical to before
@@ -160,7 +169,7 @@ def build_personalized_system_prompt(base_prompt: str, ctx: PersonalizationConte
     else:
         groups_block = " nenhum"
 
-    if ctx.sub_agents:
+    if ctx.sub_agents and include_sub_agents:
         sub_agents_block = "\n".join(
             f"- {sanitize(sub_agent.name)} ({sub_agent.slug}): {sub_agent.system_prompt}"
             for sub_agent in ctx.sub_agents

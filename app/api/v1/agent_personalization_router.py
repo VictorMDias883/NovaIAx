@@ -12,16 +12,25 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.api.deps import get_session, require_db_user
-from app.commands.agent_memory_commands import CreateUserMemoryCommand, UpdateUserMemoryCommand
+from app.commands.agent_memory_commands import (
+    CreateUserMemoryCommand,
+    SaveGroupProfileCommand,
+    UpdateUserMemoryCommand,
+)
 from app.commands.update_agent_profile_command import UpdateAgentProfileCommand
+from app.db.group_profile_questions import questions_for
 from app.models.user_agent import UserAgent
 from app.schemas.agent_personalization_schemas import (
     AgentGroupResponse,
+    GroupProfileResponse,
+    GroupProfileUpdate,
     LearningResponse,
     LearningUpdate,
+    MemoriesClearedResponse,
     MemoryCreate,
     MemoryResponse,
     MemoryUpdate,
+    ProfileQuestionResponse,
     SubAgentResponse,
     UserAgentResponse,
     UserAgentUpdate,
@@ -55,6 +64,10 @@ async def list_agent_groups(
             icon=group.icon,
             audience=group.audience,
             sort_order=group.sort_order,
+            profile_questions=[
+                ProfileQuestionResponse(key=question.key, label=question.label, hint=question.hint)
+                for question in questions_for(group.slug)
+            ],
         ).model_dump(mode="json")
         for group in groups
     ]
@@ -237,6 +250,17 @@ async def update_my_memory(
     return _memory_response(memory)
 
 
+@router.delete("/me/memories", response_model=MemoriesClearedResponse)
+async def delete_all_my_memories(
+    current_user: dict = Depends(require_db_user),
+    session: AsyncSession = Depends(get_session),
+) -> MemoriesClearedResponse:
+    """Forget everything the agent remembers about the caller."""
+    service = AgentPersonalizationService(session)
+    deleted = await service.delete_all_memories(current_user_id(current_user))
+    return MemoriesClearedResponse(deleted=deleted)
+
+
 @router.delete("/me/memories/{key}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_my_memory(
     key: str,
@@ -248,6 +272,43 @@ async def delete_my_memory(
     deleted = await service.delete_memory(current_user_id(current_user), key)
     if not deleted:
         raise HTTPException(status_code=404, detail="Memoria não encontrada.")
+
+
+@router.get("/me/groups/{slug}/profile", response_model=GroupProfileResponse)
+async def get_my_group_profile(
+    slug: str,
+    current_user: dict = Depends(require_db_user),
+    session: AsyncSession = Depends(get_session),
+) -> GroupProfileResponse:
+    """Return the caller's answers to the group's profile questions."""
+    service = AgentPersonalizationService(session)
+    answers = await service.get_group_profile(current_user_id(current_user), slug)
+    if answers is None:
+        raise HTTPException(status_code=404, detail="Grupo não encontrado.")
+    return GroupProfileResponse(slug=slug, answers=answers)
+
+
+@router.put("/me/groups/{slug}/profile", response_model=GroupProfileResponse)
+async def save_my_group_profile(
+    slug: str,
+    payload: GroupProfileUpdate,
+    current_user: dict = Depends(require_db_user),
+    session: AsyncSession = Depends(get_session),
+) -> GroupProfileResponse:
+    """Save the caller's answers (stored as ``perfil_*`` memories).
+
+    404 for an unknown/inactive group; 422 for a question the group does not
+    have or an answer that is too long.  A blank answer erases the stored one.
+    """
+    command = SaveGroupProfileCommand(group_slug=slug, answers=payload.answers)
+    service = AgentPersonalizationService(session)
+    try:
+        answers = await service.save_group_profile(current_user_id(current_user), command)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if answers is None:
+        raise HTTPException(status_code=404, detail="Grupo não encontrado.")
+    return GroupProfileResponse(slug=slug, answers=answers)
 
 
 @router.put("/me/learning", response_model=LearningResponse)

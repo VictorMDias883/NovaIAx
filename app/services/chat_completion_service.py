@@ -34,12 +34,12 @@ from app.core.logging import get_logger
 from app.models.chat_message import ChatAgent
 from app.repositories.chat_message_repository import ChatMessageRepository
 from app.repositories.system_prompt_repository import SystemPromptRepository
+from app.services.agent_identity import scope_sub_agent_prompt
 from app.services.agent_prompt_service import (
     build_personalized_system_prompt,
     load_personalization_context,
     parse_personalization_block,
 )
-from app.services.memory_learning_service import MemoryLearningService
 
 logger = get_logger(__name__)
 
@@ -99,11 +99,13 @@ class ChatCompletionService:
                 user_int, message_id=message_id, agent=ChatAgent.AI
             )
 
-        system_prompt = prompt.system_prompt
+        system_prompt = scope_sub_agent_prompt(prompt.system_prompt)
         if user_int is not None:
             ctx = await load_personalization_context(self.session, user_int)
             if ctx is not None:
-                system_prompt = build_personalized_system_prompt(system_prompt, ctx)
+                system_prompt = build_personalized_system_prompt(
+                    system_prompt, ctx, include_sub_agents=False
+                )
 
         agent = self.agent_key(command.agent_id)
         history = await self.conversation_cache.get_messages(agent, user_id)
@@ -127,11 +129,8 @@ class ChatCompletionService:
             [*to_send, {"role": "assistant", "content": assistant_message}],
         )
 
-        if user_int is not None:
-            try:
-                await MemoryLearningService(self.session).learn_from_statement(user_int, command.user_message)
-            except Exception:  # pragma: no cover - defensive; a turn must not fail on learning
-                logger.exception("Auto-learning failed for user %s", user_int)
+        # Sub-agents read the user's global profile (memories) but never write
+        # to it: only the general companion auto-learns facts about the user.
 
         return {
             "assistant_message": assistant_message,

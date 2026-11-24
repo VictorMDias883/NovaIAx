@@ -60,6 +60,7 @@ from app.core.config import Settings, get_settings
 from app.core.network import get_client_ip
 from app.models.ai_feedback import AI_FEEDBACK_STATUS_PENDING
 from app.models.community import CommunityReport, OfficialContactCategory, ReportStatus
+from app.models.community_group import FlagTarget, GroupAccess
 from app.models.deletion_request import DELETION_STATUS_PENDING
 from app.models.promo_code import GRANTABLE_PLANS, PromoCodeKind
 from app.repositories.agent_catalog_repository import AgentCatalogRepository
@@ -75,6 +76,7 @@ from app.services.agent_admin_service import AgentAdminService
 from app.services.agent_preview_service import AgentPreviewService
 from app.services.ai_ops_service import AIOpsService
 from app.services.app_config_service import MODULE_FLAGS, AppConfigService
+from app.services.community_group_service import CommunityGroupService
 from app.services.community_service import CommunityService
 from app.services.official_contact_service import OfficialContactService
 from app.services.plan_limit_override_service import (
@@ -85,6 +87,7 @@ from app.services.plan_limit_override_service import (
 from app.services.promo_admin_service import PromoAdminService
 from app.services.system_prompt_service import SystemPromptService
 from app.services.user_service import UserService
+from app.utils.slug import slugify
 from app.utils.totp import generate_secret, provisioning_uri
 from app.utils.totp import verify as verify_totp
 
@@ -1892,6 +1895,156 @@ async def moderate_report(
         after={"status": new_status.value},
     )
     return RedirectResponse(f"{_REPORTS_PAGE}?message={quote('Relato atualizado')}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Niche communities (groups, flagged posts/comments, moderators)
+# ---------------------------------------------------------------------------
+
+_COMMUNITIES_PAGE = "/admin/communities"
+
+
+def _communities_redirect(*, message: str | None = None, error: str | None = None) -> RedirectResponse:
+    query = f"?message={quote(message)}" if message else f"?error={quote(error or '')}"
+    return RedirectResponse(f"{_COMMUNITIES_PAGE}{query}", status_code=303)
+
+
+@router.get("/communities", response_class=HTMLResponse)
+async def communities_page(
+    request: Request,
+    admin: dict[str, Any] = Depends(require_admin_panel),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Groups, the flagged-content queue and moderator management."""
+    service = CommunityGroupService(session)
+    groups = await service.admin_list_groups()
+    queue = await service.moderation_queue()
+    return _render(
+        request,
+        "admin/communities.html",
+        {
+            "admin": admin,
+            "csrf_token": admin["csrf_token"],
+            "active": "communities",
+            "groups": groups,
+            "queue": queue,
+            "accesses": [access.value for access in GroupAccess],
+            "message": request.query_params.get("message"),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@router.post("/communities/content/{kind}/{target_id}")
+async def moderate_community_content(
+    request: Request,
+    kind: str,
+    target_id: int,
+    action: str = Form(...),
+    csrf_token: str = Form(""),
+    admin: dict[str, Any] = Depends(require_admin_panel),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Remove or restore a flagged post/comment."""
+    _validate_csrf(admin, csrf_token)
+    if kind not in {FlagTarget.POST.value, FlagTarget.COMMENT.value} or action not in {"remove", "restore"}:
+        return _communities_redirect(error="Ação inválida")
+    try:
+        await CommunityGroupService(session).admin_moderate(FlagTarget(kind), target_id, remove=action == "remove")
+    except HTTPException as exc:
+        return _communities_redirect(error=str(exc.detail))
+    await _audit(
+        session, request, admin, f"community.{kind}.{action}", entity=f"community_{kind}", entity_id=target_id
+    )
+    return _communities_redirect(message="Conteúdo atualizado")
+
+
+@router.post("/communities/groups")
+async def create_community_group(
+    request: Request,
+    slug: str = Form(...),
+    name: str = Form(...),
+    description: str = Form(...),
+    icon: str = Form("💬"),
+    access: str = Form("open"),
+    audience_slug: str = Form(""),
+    sort_order: int = Form(100),
+    csrf_token: str = Form(""),
+    admin: dict[str, Any] = Depends(require_admin_panel),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Create a new community group (no app release needed)."""
+    _validate_csrf(admin, csrf_token)
+    clean_slug = slugify(slug, max_length=80) if slug.strip() else ""
+    if not clean_slug or not name.strip() or not description.strip():
+        return _communities_redirect(error="Preencha identificador, nome e descrição")
+    try:
+        group_access = GroupAccess(access)
+    except ValueError:
+        return _communities_redirect(error="Tipo de acesso inválido")
+    try:
+        group = await CommunityGroupService(session).admin_create_group(
+            slug=clean_slug,
+            name=name.strip()[:120],
+            description=description.strip(),
+            icon=icon.strip()[:50],
+            access=group_access,
+            audience_slug=audience_slug.strip() or None,
+            sort_order=sort_order,
+        )
+    except HTTPException as exc:
+        return _communities_redirect(error=str(exc.detail))
+    await _audit(
+        session, request, admin, "community.group.create", entity="community_group", entity_id=group.id,
+        after={"slug": clean_slug, "access": group_access.value},
+    )
+    return _communities_redirect(message="Comunidade criada")
+
+
+@router.post("/communities/groups/{group_id}/active")
+async def toggle_community_group(
+    request: Request,
+    group_id: int,
+    active: str = Form(...),
+    csrf_token: str = Form(""),
+    admin: dict[str, Any] = Depends(require_admin_panel),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    _validate_csrf(admin, csrf_token)
+    enabled = active == "1"
+    try:
+        await CommunityGroupService(session).admin_set_active(group_id, active=enabled)
+    except HTTPException as exc:
+        return _communities_redirect(error=str(exc.detail))
+    await _audit(
+        session, request, admin, "community.group.active", entity="community_group", entity_id=group_id,
+        after={"active": enabled},
+    )
+    return _communities_redirect(message="Comunidade atualizada")
+
+
+@router.post("/communities/groups/{group_id}/moderators")
+async def set_community_moderator(
+    request: Request,
+    group_id: int,
+    user_id: int = Form(...),
+    moderator: str = Form("1"),
+    csrf_token: str = Form(""),
+    admin: dict[str, Any] = Depends(require_admin_panel),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Promote (or demote) a user to moderator of one group."""
+    _validate_csrf(admin, csrf_token)
+    promote = moderator == "1"
+    try:
+        await CommunityGroupService(session).admin_set_moderator(group_id, user_id, moderator=promote)
+    except HTTPException as exc:
+        return _communities_redirect(error=str(exc.detail))
+    await _audit(
+        session, request, admin, "community.moderator", entity="community_group", entity_id=group_id,
+        after={"user_id": user_id, "moderator": promote},
+    )
+    return _communities_redirect(message="Moderador atualizado")
 
 
 # ---------------------------------------------------------------------------

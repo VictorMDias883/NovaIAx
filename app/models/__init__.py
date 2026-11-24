@@ -31,6 +31,14 @@ from app.models.community import (
     ReportStatus,
     UserBlock,
 )
+from app.models.community_group import (
+    CommunityComment,
+    CommunityContentFlag,
+    CommunityGroup,
+    CommunityMembership,
+    CommunityPost,
+    CommunityProfile,
+)
 from app.models.consent import CONSENT_TYPES, DEFAULT_CONSENT_TYPES, ConsentEvent, ConsentRecord
 from app.models.deletion_request import (
     DELETION_STATUS_HANDLED,
@@ -84,6 +92,12 @@ from app.models.user_agent import UserAgent
 from app.models.user_memory import UserMemory
 
 __all__ = [
+    "CommunityComment",
+    "CommunityContentFlag",
+    "CommunityGroup",
+    "CommunityMembership",
+    "CommunityPost",
+    "CommunityProfile",
     "AdminAuditLog",
     "AdminSession",
     "AgentAction",

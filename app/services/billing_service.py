@@ -142,6 +142,14 @@ class BillingService:
                 PlanErrorCode.PURCHASE_INVALID,
                 detail="Produto de assinatura desconhecido.",
             )
+        token_hash = hash_purchase_token(purchase_token)
+        if await self.repository.token_owned_by_other_user(token_hash, user_id):
+            logger.warning("purchase_token_reuse_rejected", extra={"user_id": user_id})
+            raise PlanRequiredError(
+                PlanErrorCode.PURCHASE_INVALID,
+                detail="Esta compra já está vinculada a outra conta.",
+            )
+
         state = await self._fetch_state(product_id, purchase_token)
 
         if (
@@ -156,7 +164,6 @@ class BillingService:
                 # refund risk is preferable to locking out a paying user.
                 logger.warning("google_acknowledge_failed", extra={"transient": exc.transient})
 
-        token_hash = hash_purchase_token(purchase_token)
         subscription = await self._upsert(user_id, plan, product_id, token_hash, state)
         self.repository.add_event(
             PurchaseEvent(

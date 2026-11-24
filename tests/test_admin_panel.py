@@ -449,6 +449,45 @@ async def test_report_moderation_queue_and_status_change(
     assert client.delete(f"/api/v1/community/reports/{report_id}", headers=author_headers).status_code == 204
 
 
+@pytest.mark.asyncio
+async def test_community_groups_admin_page(created_emails: list[str], client: TestClient) -> None:
+    admin_email = "panel-cg-admin@example.com"
+    created_emails.append(admin_email)
+    _register(client, admin_email, "Community Admin")
+    client = await _admin_login(client, admin_email)
+
+    page = client.get("/admin/communities")
+    assert page.status_code == 200
+    assert "Bate-papo geral" in page.text and "Mães solteiras" in page.text
+
+    created = client.post(
+        "/admin/communities/groups",
+        data={
+            "slug": "Enfermeiros SP",
+            "name": "Enfermeiros",
+            "description": "Plantões e rotina.",
+            "access": "open",
+            "csrf_token": _panel_csrf(client),
+        },
+        follow_redirects=False,
+    )
+    assert created.status_code == 303 and "message=" in created.headers["location"]
+    assert "enfermeiros_sp" in client.get("/admin/communities").text
+
+    invalid = client.post(
+        "/admin/communities/groups",
+        data={
+            "slug": "sem_publico",
+            "name": "X",
+            "description": "Y",
+            "access": "audience",
+            "csrf_token": _panel_csrf(client),
+        },
+        follow_redirects=False,
+    )
+    assert "error=" in invalid.headers["location"]
+
+
 # ---------------------------------------------------------------------------
 # Optional TOTP, enabled flag and IP allowlist
 # ---------------------------------------------------------------------------

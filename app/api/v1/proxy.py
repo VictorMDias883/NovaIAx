@@ -184,6 +184,13 @@ async def proxy_request(
     """
     # --- 1. Resolve the downstream service ---
     # The first path segment identifies the service (e.g. "ai").
+    # The gateway proxy is for operators and service integrations; end users
+    # of the mobile app never call it, so they must not reach internal services.
+    if current_user.get("role") not in {UserRole.ADMIN.value, UserRole.SERVICE.value}:
+        raise HTTPException(status_code=403, detail="Não autorizado.")
+    if any(segment in {"..", "."} for segment in service_name.split("/")):
+        raise HTTPException(status_code=400, detail="Caminho inválido.")
+
     service = settings.downstream_services.get(service_name.split("/")[0])
     if not service:
         raise HTTPException(status_code=404, detail="Serviço não encontrado.")
@@ -221,7 +228,8 @@ async def proxy_request(
     # ``get_client_ip`` resolves the real IP (via X-Forwarded-For only
     # when a trusted proxy is configured).
     headers["X-Forwarded-For"] = get_client_ip(request, settings)
-    headers["X-Gateway-User"] = current_user.get("full_name", "anonymous")
+    # The stable id, never the display name (users edit their own name).
+    headers["X-Gateway-User"] = str(current_user.get("id", "anonymous"))
 
     # --- 5. Build the downstream URL ---
     # ``service_name`` may contain sub-paths (e.g. "ai/chat").  The first
@@ -258,7 +266,8 @@ async def proxy_request(
             response.headers[key] = value
 
     # --- 8. Cache the response (GET/HEAD only) ---
-    if request.method in {"GET", "HEAD"}:
+    cacheable = resp.status_code < 500 and "set-cookie" not in resp.headers
+    if request.method in {"GET", "HEAD"} and cacheable:
         await redis_client.set(
             cache_key,
             _cache_serialise(resp.status_code, resp.headers, response_body),

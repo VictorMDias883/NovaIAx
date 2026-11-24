@@ -26,6 +26,7 @@ from app.db.session import Base, SessionLocal
 from app.main import app
 from app.models.system_prompt import SystemPrompt
 from app.models.user import User
+from app.services.agent_identity import scope_sub_agent_prompt
 from app.services.chat_completion_service import ChatCompletionService
 from fastapi.testclient import TestClient
 from sqlalchemy import delete
@@ -91,7 +92,7 @@ def test_history_is_replayed_to_the_model_on_the_next_turn() -> None:
 
         assert first["assistant_message"] == "reply-1"
         assert second["assistant_message"] == "reply-2"
-        assert ai.system_prompts == [_AGENT_PROMPT, _AGENT_PROMPT]
+        assert ai.system_prompts == [scope_sub_agent_prompt(_AGENT_PROMPT)] * 2
 
         # The second turn must carry the whole thread, not just the new message.
         assert ai.calls[0] == [{"role": "user", "content": "my name is Ana"}]
@@ -146,7 +147,7 @@ def test_two_agents_of_the_same_user_do_not_share_a_thread() -> None:
         await service.create_completion(ChatCompletionCommand(int(other.id), "support question"), user_id=1)
 
         assert [m["content"] for m in ai.calls[1]] == ["support question"]
-        assert ai.system_prompts == [_AGENT_PROMPT, "Be terse."]
+        assert ai.system_prompts == [scope_sub_agent_prompt(_AGENT_PROMPT), scope_sub_agent_prompt("Be terse.")]
 
     asyncio.run(_with_session(scenario))
 
